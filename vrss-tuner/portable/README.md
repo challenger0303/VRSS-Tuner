@@ -51,6 +51,7 @@ Frameでは旧来のEDID診断やStart-Providerを使わず、[Frame専用手順
 | VIVE Focus VisionなどのPCストリーミング | VIVE Streaming（実機未検証） | VIVE Streamingの視線転送を有効にし、`Start-Vive-Streaming.cmd`を実行。SDK本体は同梱しません |
 | Steam Link経由のQuest Proなどの実験用SteamVR入力 | SteamVR視線アクション（実機未検証） | PCへの視線共有を有効にして`Start-SteamVR-Eye.cmd`を実行。単一の注視点を左右へ投影します。Steam Frameには上記の専用タブを使います |
 | Varjo XR-4 / Aero / XR-3 / VR-3 | Varjo Native SDK（実機未検証） | Varjo Baseを起動し、`Start-Varjo.cmd`を実行。インストール済み`VarjoLib.dll`が必要です |
+| PICOの視線対応機 | PICO（Bridge 0.6.0+直接購読） | Bridge 0.6.0以降を起動し、TunerでヘッドセットIPv4を保存するか`Start-PICO.cmd`を実行。[PICO設定](PICO.md)を参照 |
 
 Tunerの「視線経路を起動」ボタンは選択中の入力元に対応したプロバイダー起動スクリプトを開きます。BaballoniaではバックグラウンドのOSC受信と転送も開始します。`Start-Provider.cmd`は手動診断用です。VIVEのDLLが標準の導入先にないときは、`VRSS_VIVE_SDK_DLL`環境変数に`SRanipal.dll`または`VS_PC_SDK.dll`のフルパスを指定してください。VarjoのDLLが見つからない場合は`VRSS_VARJO_DLL`にインストール済み`VarjoLib.dll`のフルパスを指定します。ベンダーDLLは同梱しません。Pro Eyeは片目だけ有効なフレームでも、その視線方向を両目へ投影します。VIVE・SteamVR視線アクション・Varjoはコードと模擬入力での確認にとどまり、VRChat内の追従は未検証です。Varjoの倍率は起動時に読み込み、目別の角度オフセットはまだ反映しません。
 

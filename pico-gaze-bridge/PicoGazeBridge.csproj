@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PicoTargetFramework Condition="'$(PicoTargetFramework)' == ''">net9.0</PicoTargetFramework>
+    <TargetFramework>$(PicoTargetFramework)</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../pico-gaze-probe/EyePacket.cs" Link="EyePacket.cs" />
+  </ItemGroup>
+</Project>

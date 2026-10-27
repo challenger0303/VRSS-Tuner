@@ -294,7 +294,7 @@ int RunVrssProvider(int argc,wchar_t** argv,const std::function<bool()>& keepRun
             const bool nextOsc=route=="Baballonia";
             const bool nextUdp=nextOsc || route!="SRanibro";
             if(route!="Baballonia" && route!="SRanibro" && route!="PSVR2Toolkit" && route!="ViveProEye" &&
-               route!="ViveStreaming" && route!="SteamVREye" && route!="Varjo" && !route.empty())
+               route!="ViveStreaming" && route!="SteamVREye" && route!="Varjo" && route!="PICO" && !route.empty())
                 throw std::runtime_error("Unknown gaze input route");
             if(nextPort<1 || nextPort>65535 || forward<0 || forward>65535 ||
                (nextOsc && (forward==nextPort || nextPort==5556 || forward==5556)))

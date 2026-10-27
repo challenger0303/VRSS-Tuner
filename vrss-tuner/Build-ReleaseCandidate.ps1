@@ -1,4 +1,4 @@
-param([string]$PimaxBridgeDll = '', [string]$VarjoSdk = '')
+param([string]$PimaxBridgeDll = '', [string]$VarjoSdk = '', [string]$PicoTargetFramework = 'net9.0')
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $research = Split-Path -Parent $here
@@ -8,7 +8,7 @@ $stamp = Get-Date -Format 'yyyyMMddTHHmmssfff'
 $testLog = Join-Path $release "release-tests-$stamp.log"
 
 & (Join-Path $here 'test.ps1') *>&1 | Tee-Object -FilePath $testLog | Out-Null
-$buildArgs = @{ RequireAllBridges = $true }
+$buildArgs = @{ RequireAllBridges = $true; PicoTargetFramework = $PicoTargetFramework }
 if ($PimaxBridgeDll) { $buildArgs.PimaxBridgeDll = $PimaxBridgeDll }
 if ($VarjoSdk) { $buildArgs.VarjoSdk = $VarjoSdk }
 $artifact = & (Join-Path $here 'Build-Portable.ps1') @buildArgs | Select-Object -Last 1
@@ -31,6 +31,7 @@ try {
         'Start-Common-Session.ps1','Gaze-Route.ps1','Set-Gaze-Route.ps1','Start-Provider-Only.cmd','Install-SteamVR-Autostart.cmd','Remove-SteamVR-Autostart.cmd',
         'steamvr-gaze-bridge/steamvr_gaze_bridge.exe','psvr2-gaze-bridge/psvr2_gaze_bridge.exe',
         'vive-streaming-gaze-bridge/ViveStreamingGazeBridge.exe',
+        'pico-gaze-bridge/PicoGazeBridge.exe','Pico-Source.ps1','Start-PICO.cmd','PICO.md',
         'varjo-gaze-bridge/varjo_gaze_bridge.exe','pimax-eye-bridge/driver_sranibro_eye.dll',
         'STEAM-FRAME.md','DRIVER-CONTRACTS.md','THIRD_PARTY_NOTICES.md')
     foreach ($name in $required) {

@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
+using PicoGaze;
 
 // Diagnostic for PicoFacialBridge's native E datagram. This program never sends
 // gaze to NVIDIA. BridgeSplit is single-client; live capture is explicit opt-in.
@@ -14,34 +15,23 @@ internal static class Program
     private static readonly byte[] Stop = Encoding.ASCII.GetBytes("STOP");
     private static readonly Regex Ack = new(@"^PXR_SUB_ACK id=([0-9a-f]{16}) mask=([0-3]) epoch=([0-9a-f]{16})$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    private static (uint left, uint right, float lx, float ly, float lz, float rx, float ry, float rz, long time)? DecodeEye(ReadOnlySpan<byte> data, long epoch)
-    {
-        if (data.Length != 83 || data[0] != 'E' || (data[1] & 1) == 0 || (data[2] & ~data[1]) != 0 ||
-            BinaryPrimitives.ReadInt64LittleEndian(data.Slice(3, 8)) != epoch) return null;
-        var time = BinaryPrimitives.ReadInt64LittleEndian(data.Slice(11, 8));
-        if (time <= 0) return null;
-        var left = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(19, 4));
-        var right = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(23, 4));
-        if (((left | right) & ~0x906u) != 0) return null;
-        var values = new float[6];
-        for (var i = 0; i < values.Length; i++)
-            values[i] = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(data.Slice(31 + 4 * i, 4)));
-        if (values.Any(v => !float.IsFinite(v))) return null;
-        return (left, right, values[0], values[1], values[2], values[3], values[4], values[5], time);
-    }
+    private static EyeFrame? DecodeEye(ReadOnlySpan<byte> data, long epoch) =>
+        EyePacket.TryDecode(data, out var frame) && frame.Epoch == epoch ? frame : null;
     private static int Main(string[] args)
     {
         try
         {
             if (args.Length == 1 && args[0] == "--self-test")
             {
-                var packet = new byte[83]; packet[0] = (byte)'E'; packet[1] = 1; packet[2] = 1;
+                var packet = new byte[83]; packet[0] = (byte)'E'; packet[1] = 1;
                 BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(3), 42);
                 BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(11), 100);
                 BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(19), 0x100);
                 BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(23), 0x100);
+                BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(27), 2);
                 BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(31), BitConverter.SingleToInt32Bits(.25f));
-                if (DecodeEye(packet, 42) is not { lx: .25f } || DecodeEye(packet, 43) is not null)
+                BinaryPrimitives.WriteSingleLittleEndian(packet.AsSpan(63), -1f);
+                if (DecodeEye(packet, 42) is not { Left.X: .25f, CombinedValid: true } || DecodeEye(packet, 43) is not null)
                     throw new Exception("PICO packet parser failed");
                 Console.WriteLine("PICO_GAZE_PROBE_SELF_TEST_PASS"); return 0;
             }
@@ -99,10 +89,10 @@ internal static class Program
                         }
                         if (epoch == 0) continue;
                         var eye = DecodeEye(data, epoch);
-                        if (eye is not { } e || e.time <= lastTime) continue;
-                        lastTime = e.time;
-                        Console.WriteLine($"eye leftValid={(e.left & 0x100u) != 0} rightValid={(e.right & 0x100u) != 0} " +
-                            $"L=({e.lx:F4},{e.ly:F4},{e.lz:F4}) R=({e.rx:F4},{e.ry:F4},{e.rz:F4})");
+                        if (eye is not { } e || e.SourceTime <= lastTime) continue;
+                        lastTime = e.SourceTime;
+                        Console.WriteLine($"eye leftValid={e.LeftValid} rightValid={e.RightValid} combinedValid={e.CombinedValid} " +
+                            $"L={e.Left} R={e.Right} combined={e.Combined}");
                     }
                     catch (SocketException ex) when (ex.SocketErrorCode == SocketError.TimedOut) { }
                 }

@@ -9,7 +9,7 @@
 | VIVE Pro Eye + VRCFT SRanipal module | 双方が同じ SRanipal ランタイムを使用 | 同時 SDK クライアント可否は未確認 | ベンダーランタイム起動、VRCFT eye/face 更新、Tuner 視線更新、Tuner 停止後の更新を実機で測る。VRCFT の SRanipal module には他モジュールとの起動競合報告あり |
 | VIVE Focus Vision / Focus 3 / XR Elite の Streaming + VRCFT | VIVE Streaming SDK を複数クライアントが使う可能性 | 同時利用・開始終了の所有権は未確認 | VRCFT の顔値を維持したまま Tuner bridge を起動・終了して比較。Tuner 自体は VRChat/VRCFT へ OSC を送らない |
 | PSVR2 Toolkit + VRCFT module / Baballonia | Tuner は CAPI、旧 VRCFT module は Toolkit の legacy IPC サーバーを使用 | 分離したインターフェースだが、同時 CAPI セッションは未確認 | Tuner の起動前確認はエクスポート検査だけにし、余分な CAPI init/deinit を避けた。実機で顔・視線の連続性を測る |
-| PICO + UnifiedPicoModule / PicoFacialBridge | PC 側 UDP 9030 と headset の単一クライアントセッション | **同時に直接接続すると競合する** | 独立診断プローブは明示的 `--exclusive-test` 指定かつ VRCFT 停止時だけ動く。共存には UnifiedPicoModule 側からの視線複製・リレーが必要。PICO はまだ Tuner の VRSS2 入力ではない |
+| PICO + UnifiedPicoModule / PicoFacialBridge | Bridge 0.6.0以降の独立gaze購読と従来のAvatarセッション | 実機リプレイで独立開始／停止、face-only継続を検証。別の試験で実際のPICO/Cympleモジュール共存とBridgeプロセス再起動も確認 | 一時PCポートを使い、PC9030を占有せずVRCFTやリレーを必要としない。実際のCymple口入力と追跡サービス内部再開後の完全な新データ復旧は未確認。[PICO直接入力](PICO.md)を参照 |
 | Varjo + VRCFT | Varjo Native SDK セッション | Varjo 公式は描画アプリと別の視線解析アプリの同時利用をサポート。Tuner + VRCFT の実機同時テストは未実施 | Varjo bridge は現在試作で、Tuner 配布物には未収録。SDK 同時接続は有望だが顔値と VRSS2 描画は別途検証 |
 | Quest Pro / Galaxy XR の Virtual Desktop + VRCFT | Virtual Desktop の共有状態を読み取り | 試作プローブは共有メモリの読み取りだけで、ポート・カメラの所有権を取らない | データ更新の鮮度判定と Tuner への視線変換は未実装。ストリーミング側の foveation と VRSS2 を混同しない |
 | Quest Pro / Steam Frame の Steam Link + VRCFT | SteamVR/OpenVR の視線 action | 試作プローブは API 読み取りのみ。装着・VRCFT 同時実機値は未確認 | action が VRChat 起動中にも更新されるかを測ってから Tuner 入力にする |

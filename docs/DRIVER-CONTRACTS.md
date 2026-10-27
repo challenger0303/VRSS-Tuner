@@ -6,6 +6,42 @@ are rejected by default; the marketing version alone is not sufficient.
 
 ## Additional driver builds
 
+### Included 616.92 experimental contract
+
+`common-vrss-provider/driver-contracts/616.92.txt` contains an opt-in contract
+for one exact 616.92 NVAPI implementation/UMD pair. Its eight method addresses,
+structure layouts and UMD challenge-response algorithm have been checked.
+A separate process successfully obtained a challenge, registered a test routing
+key, queried zero consumers and unregistered; its registration event appeared
+and was removed. A follow-up passed listener setup and one center-point
+UpdateGazeData ABI call. The provider active flag returned to zero on unregister,
+and UMD closed the borrowed listener handle. The existing XOR mask is unchanged.
+
+From a development portable bundle, run the read-only check:
+
+```powershell
+.\Test-Driver-Contract.cmd
+```
+
+This selects the contract only in that check process. It does not change the
+shell environment, start a normal provider, or register anything. In a source
+checkout, supply `-ContractFile` and `-ProviderExe` with the corresponding paths.
+To use the contract in an actual session, select its absolute path through
+`VRSS_EXPERIMENTAL_DRIVER_CONTRACT` in that session's process tree as described
+below. The default driver list is unchanged.
+
+Live PICO testing on 2026-10-28 also connected one consumer in normally
+EAC-protected VRChat with SteamVR 2.18.4 and actual OpenVR HMD geometry.
+Two sessions recorded 3,503 and 8,966 successful gaze submissions with zero
+submission errors; the second session started with MSAA x4. Both normally
+unregistered.
+The wearer could not identify a clear moving quality region, so visual
+rendering and alignment remain unconfirmed. UpdateGazeData does not propagate
+the lower dispatch status in this driver; a zero return alone is not rendered
+output evidence. See [PICO validation](PICO.md#validation).
+
+### Auditing another image pair
+
 Run `Audit-Driver.cmd` from the portable folder on a PC with the target driver.
 It saves the loaded NVAPI and UMD SHA-256 hashes, the gaze-handler vtable RVA,
 and eight method RVAs under `%LOCALAPPDATA%\VRSS Tuner\driver-audits`. This

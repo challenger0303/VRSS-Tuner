@@ -1,5 +1,6 @@
-﻿param([ValidateSet('Baballonia','PSVR2Toolkit','SRanibro','ViveProEye','ViveStreaming','SteamVREye','Varjo')][string]$InputRoute='Baballonia',
+﻿param([ValidateSet('Baballonia','PSVR2Toolkit','SRanibro','ViveProEye','ViveStreaming','SteamVREye','Varjo','PICO')][string]$InputRoute='Baballonia',
       [switch]$Worker,[string]$RunDirectory,[switch]$AllowRunningVRChat,[switch]$InputOnly,[switch]$Recovering,
+      [string]$HeadsetIp,
       [ValidateRange(1,65535)][int]$OscPort=9020,
       [ValidateRange(0,65535)][int]$OscForward=8888)
 $ErrorActionPreference = 'Stop'
@@ -45,7 +46,12 @@ if ($Worker) {
     $port = if ($InputRoute -eq 'SRanibro') { 5555 } elseif ($InputRoute -eq 'Baballonia') { $OscPort } else { 5556 }
     . (Join-Path $bundle 'Gaze-Route.ps1')
     $child = $null
+    $previousContract = $env:VRSS_EXPERIMENTAL_DRIVER_CONTRACT
     try {
+        $contractFile = Join-Path $resolved 'pico-driver-contract.txt'
+        if ($InputRoute -eq 'PICO' -and (Test-Path -LiteralPath $contractFile -PathType Leaf)) {
+            $env:VRSS_EXPERIMENTAL_DRIVER_CONTRACT = (Get-Content -LiteralPath $contractFile -Raw).Trim()
+        }
         if (Test-Path -LiteralPath (Join-Path $data 'gaze-paused.txt') -PathType Leaf) { throw 'Gaze startup was cancelled by Stop.' }
         Set-PimaxGazeSender close
         $providerArgs = '--geometry "' + $geometry + '" --config "' + $calibration +
@@ -71,8 +77,15 @@ if ($Worker) {
             [void]$child.WaitForExit(5000)
             if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force -ErrorAction Stop }
         }
-    }
+    } finally { $env:VRSS_EXPERIMENTAL_DRIVER_CONTRACT = $previousContract }
     return
+}
+if ($InputRoute -eq 'PICO') {
+    . (Join-Path $bundle 'Pico-Source.ps1')
+    $HeadsetIp = Get-PicoHeadsetIp $data $HeadsetIp
+    if (-not (Test-Path -LiteralPath (Join-Path $bundle 'pico-gaze-bridge\PicoGazeBridge.exe') -PathType Leaf)) {
+        throw 'PICO direct gaze client is missing from this package.'
+    }
 }
 if (-not $InputOnly) {
 $status = & (Join-Path $bundle 'Test-Setup.ps1') -AllowRunningVRChat:$AllowRunningVRChat -AllowOfficialHandoff | ConvertFrom-Json
@@ -156,6 +169,10 @@ $run = Join-Path $runs ((Get-Date -Format 'yyyyMMddTHHmmssfff') + '-' + $PID)
 New-Item -ItemType Directory -Path $run -ErrorAction Stop | Out-Null
 Copy-Item -LiteralPath (Join-Path $data 'preflight\geometry.txt') -Destination (Join-Path $run 'geometry.txt')
 $InputRoute | Set-Content -LiteralPath (Join-Path $run 'input-route.txt') -Encoding ASCII
+if ($InputRoute -eq 'PICO' -and $env:VRSS_EXPERIMENTAL_DRIVER_CONTRACT) {
+    [IO.File]::WriteAllText((Join-Path $run 'pico-driver-contract.txt'),
+        [IO.Path]::GetFullPath($env:VRSS_EXPERIMENTAL_DRIVER_CONTRACT),[Text.Encoding]::UTF8)
+}
 '3' | Set-Content -LiteralPath (Join-Path $run 'route-runtime-version.txt') -Encoding ASCII
 if ($InputRoute -eq 'Baballonia') {
     [IO.File]::WriteAllText((Join-Path $run 'osc-settings.txt'),"$OscPort`n$OscForward`n",[Text.Encoding]::ASCII)
@@ -214,6 +231,8 @@ do {
                 '" --stop-file "' + (Join-Path $run 'input-stop.request') + '" --port 5556 --seconds 86400'
             $gaze = Start-Process -FilePath $bridge -ArgumentList $bridgeArgs -WindowStyle Hidden -PassThru -RedirectStandardError $bridgeError
             $gaze.Id | Set-Content -LiteralPath (Join-Path $run 'steamvr-bridge.pid') -Encoding ASCII
+        } elseif ($InputRoute -eq 'PICO') {
+            $gaze = Start-PicoGazeClient $bundle $run $calibration $HeadsetIp
         } elseif ($InputRoute -eq 'Varjo') {
             $bridge = Join-Path $bundle 'varjo-gaze-bridge\varjo_gaze_bridge.exe'
             $previousSearchPath = $env:PATH
@@ -236,6 +255,10 @@ do {
         if ($gaze -and $gaze.WaitForExit(500)) {
             $detail = if (Test-Path -LiteralPath $bridgeError) { Get-Content -LiteralPath $bridgeError -Raw } else { '' }
             throw "The $InputRoute input bridge exited during startup: $detail"
+        }
+        if ($InputRoute -eq 'PICO') {
+            Save-PicoHeadsetIp $data $HeadsetIp | Out-Null
+            Save-PicoHeadsetIp $run $HeadsetIp | Out-Null
         }
         $InputRoute | Set-Content -LiteralPath (Join-Path $run 'input-route.txt') -Encoding ASCII
         if ($InputRoute -eq 'Baballonia') {
@@ -266,8 +289,13 @@ throw "Provider startup not confirmed. Stop requested. Inspect logs in $run"
         -not (Test-Path -LiteralPath (Join-Path $data 'gaze-paused.txt') -PathType Leaf)) {
         try {
             # Rebuild the old auxiliary bridge too, not only its UDP selector.
+            $recoverArgs = @{}
+            if ($originalInput.inputRoute -eq 'PICO') {
+                . (Join-Path $bundle 'Pico-Source.ps1')
+                $recoverArgs.HeadsetIp = Get-PicoHeadsetIp $run ''
+            }
             & $PSCommandPath -InputOnly -Recovering -RunDirectory $run -InputRoute $originalInput.inputRoute `
-                -OscPort ([int]$originalInput.inputPort) -OscForward ([int]$originalInput.oscForward) | Out-Null
+                -OscPort ([int]$originalInput.inputPort) -OscForward ([int]$originalInput.oscForward) @recoverArgs | Out-Null
         } catch { throw ($startupError + "`nPrevious input could not be restored: " + $_.Exception.Message) }
     } elseif ($run -and ((-not $InputOnly -and $workerProcess) -or
               (Test-Path -LiteralPath (Join-Path $data 'gaze-paused.txt') -PathType Leaf))) {

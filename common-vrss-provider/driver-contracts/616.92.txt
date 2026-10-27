@@ -1,0 +1,7 @@
+format=1
+version=616.92
+module=nvapi64_impl.dll
+api_sha256=3f26731d9ff492c2ef3be879b0da68e415ed563dae5caee901eb01f66c32379d
+umd_sha256=670a1c125f8c3851a1ae7d23c0390cd879e5b9d0a423d99eddff37a8e2774bff
+vtable_rva=0x49f5e8
+method_rvas=0x305330,0x3306e0,0x330740,0x32fae0,0x330270,0x32f230,0x32f980,0x32e630

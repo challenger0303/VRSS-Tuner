@@ -32,6 +32,7 @@
 #include "ProviderTelemetry.h"
 #include "PimaxGazeMonitor.h"
 #include "NvidiaQueueMonitor.h"
+#include "PicoSourceSettings.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -450,7 +451,7 @@ enum ControlId {
     kGazeRefresh, kGazeApply, kGazeRestore, kGazeReset,
     kAreaSlider, kEstimateMsaa, kProfileName, kProfileSave, kProfileSwitch,
     kInputTab, kInputPort, kInputForward, kInputStart, kInputStop, kInputStatus, kPreviewZoom,
-    kLanguage, kFrameTab, kFrameStart, kFrameStop, kFrameLaunch
+    kLanguage, kFrameTab, kFrameStart, kFrameStop, kFrameLaunch, kPicoHeadsetIp, kPicoSave
 };
 struct Ui {
     HWND window{}, mode{}, area{}, aspectCheck{}, aspect{}, layout{}, invert{}, status{}, restore{};
@@ -458,6 +459,8 @@ struct Ui {
     bool loadedOk{};
     HWND driverTab{}, gazeTab{}, gazeSourceLabel{}, gazePathNote{}, gazeX{}, gazeY{}, gazeLeft{}, gazeRight{}, gazeInvert{}, gazeStatus{}, gazeApply{}, gazeRestore{};
     HWND profileName{}, profileSave{}, profileSwitch{}, inputTab{}, gazeSource{}, sourceNote{}, inputPort{}, inputForward{}, inputStart{}, inputStop{}, inputStatus{}, liveMonitor{}, previewZoom{}, language{};
+    HWND picoHeadsetIp{};
+    std::vector<HWND> oscControls, picoControls;
     live::Target target{live::Target::Pimax};
     live::Snapshot gazeLoaded{};
     bool gazeLoadedOk{};
@@ -469,7 +472,7 @@ struct Ui {
 };
 Ui gUi;
 frame::Runtime gFrameRuntime;
-std::atomic<int> gSelectedSource{0}; // 0=Pimax, 1=Baballonia, 2=PSVR2, 3=SRanibro, 4=VIVE Pro Eye, 5=VIVE Streaming, 6=SteamVR eye action, 7=Varjo
+std::atomic<int> gSelectedSource{0}; // 0=Pimax, 1=Baballonia, 2=PSVR2, 3=SRanibro, 4=VIVE Pro Eye, 5=VIVE Streaming, 6=SteamVR eye action, 7=Varjo, 8=PICO direct
 struct LiveMonitor {
     int source{}, selectedSource{};
     bool vendor{}, common{}, routeVerified{}, inputRunning{}, relayFresh{}, relaySent{}, providerReady{}, consumerReady{}, accepted{}, failure{};
@@ -493,6 +496,7 @@ const wchar_t* gazeSourceName(int source, bool english) {
     case 5: return english ? L"VIVE Streaming" : L"VIVE Streaming";
     case 6: return english ? L"SteamVR eye action" : L"SteamVR視線アクション";
     case 7: return english ? L"Varjo Native SDK" : L"Varjo Native SDK";
+    case 8: return L"PICO direct";
     default: return english ? L"unknown" : L"不明";
     }
 }
@@ -569,7 +573,7 @@ void applyLanguage() {
     repopulate(gUi.mode, L"オフ", L"オン");
     int source = int(SendMessageW(gUi.gazeSource, CB_GETCURSEL, 0, 0));
     SendMessageW(gUi.gazeSource, CB_RESETCONTENT, 0, 0);
-    for (const wchar_t* name : {L"Pimax経路（純正優先）", L"Baballonia OSC", L"PSVR2 Toolkit（直接）", L"SRanibro（共通）", L"VIVE Pro Eye（SRanipal・実機未検証）", L"VIVE Streaming（実機未検証）", L"SteamVR視線アクション（実機未検証）", L"Varjo Native SDK（実機未検証）"}) {
+    for (const wchar_t* name : {L"Pimax経路（純正優先）", L"Baballonia OSC", L"PSVR2 Toolkit（直接）", L"SRanibro（共通）", L"VIVE Pro Eye（SRanipal・実機未検証）", L"VIVE Streaming（実機未検証）", L"SteamVR視線アクション（実機未検証）", L"Varjo Native SDK（実機未検証）", L"PICO（Bridge 0.6.0+直接購読）"}) {
         const auto translated=language::Text(name);
         SendMessageW(gUi.gazeSource,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(translated.c_str()));
     }
@@ -860,6 +864,11 @@ int restorePimaxService() {
     CloseServiceHandle(service); CloseServiceHandle(manager);
     return result;
 }
+void showSourceSettings() {
+    const bool visible=gUi.panel==2;
+    for(HWND item:gUi.oscControls)ShowWindow(item,visible && gSelectedSource.load()!=8?SW_SHOW:SW_HIDE);
+    for(HWND item:gUi.picoControls)ShowWindow(item,visible && gSelectedSource.load()==8?SW_SHOW:SW_HIDE);
+}
 void showPanel(int panel) {
     gUi.panel = panel;
     for(HWND handle:gUi.frameControls)ShowWindow(handle,panel==3?SW_SHOW:SW_HIDE);
@@ -867,6 +876,7 @@ void showPanel(int panel) {
     for (HWND item : gUi.driverControls) ShowWindow(item, panel == 0 ? SW_SHOW : SW_HIDE);
     for (HWND item : gUi.gazeControls) ShowWindow(item, panel == 1 ? SW_SHOW : SW_HIDE);
     for (HWND item : gUi.inputControls) ShowWindow(item, panel == 2 ? SW_SHOW : SW_HIDE);
+    showSourceSettings();
     SendMessageW(gUi.driverTab, BM_SETCHECK, panel == 0 ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(gUi.gazeTab, BM_SETCHECK, panel == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageW(gUi.inputTab, BM_SETCHECK, panel == 2 ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -874,7 +884,7 @@ void showPanel(int panel) {
 }
 void refreshGaze() {
     int source = int(SendMessageW(gUi.gazeSource, CB_GETCURSEL, 0, 0));
-    if (source < 0 || source > 7) source = 0;
+    if (source < 0 || source > 8) source = 0;
     gUi.target = source == 0 ? live::Target::Pimax : live::Target::Common;
     if (gUi.gazeSourceLabel) {
         const wchar_t* selected=source==0?L"選択中: Pimax経路（純正優先）":
@@ -884,7 +894,8 @@ void refreshGaze() {
             source==4?L"選択中: VIVE Pro Eye → 共通プロバイダー（実機未検証）":
             source==5?L"選択中: VIVE Streaming → 共通プロバイダー（実機未検証）":
             source==6?L"選択中: SteamVR視線アクション → 共通プロバイダー（実機未検証）":
-                      L"選択中: Varjo Native SDK → 共通プロバイダー（実機未検証）";
+            source==7?L"選択中: Varjo Native SDK → 共通プロバイダー（実機未検証）":
+                      L"選択中: PICO Bridge直接購読 → 共通プロバイダー";
         setText(gUi.gazeSourceLabel,selected);
     }
     if (gUi.gazePathNote) setText(gUi.gazePathNote,source==0?
@@ -898,7 +909,8 @@ void refreshGaze() {
         source==4?L"SRanipal → Pro Eyeブリッジ → 共通プロバイダー（実機未確認）":
         source==5?L"VIVE Streaming SDK → ブリッジ → 共通プロバイダー（実機未確認）":
         source==6?L"SteamVR視線アクション → 左右投影 → 共通プロバイダー（実機未確認）":
-                  L"Varjo Native SDK → 両目視線ブリッジ → 共通プロバイダー（実機未確認）");
+        source==7?L"Varjo Native SDK → 両目視線ブリッジ → 共通プロバイダー（実機未確認）":
+                  L"PICO融合視線 → 現在のHMD投影 → 共通プロバイダー（VRCFT不要）");
     gUi.gazeLoadedOk = gGazeStore.Read(gUi.target, gUi.gazeLoaded);
     if (gUi.gazeLoadedOk) {
         const auto& v = gUi.gazeLoaded.values;
@@ -908,7 +920,8 @@ void refreshGaze() {
     }
     std::wstring info = L"Pimax: " + std::to_wstring(processCount(L"vrss_gaze_provider.exe")) +
         L" / 共通: " + std::to_wstring(processCount(L"common_vrss_provider.exe")) + L" プロセス\r\n";
-    info += gUi.gazeLoadedOk ? L"補正を読込済み。保存後は実行中の経路へ反映します。" :
+    info += gUi.gazeLoadedOk ? (source==8 ? L"Bridge 0.6.0以降が必要。補正変更後は経路を再起動。" :
+        L"補正を読込済み。保存後は実行中の経路へ反映します。") :
         L"この経路の補正ファイルを読み取れません。";
     setText(gUi.gazeStatus, info);
     EnableWindow(gUi.gazeApply, gUi.gazeLoadedOk);
@@ -1149,7 +1162,7 @@ bool readLastProfile(std::wstring& name) {
     return true;
 }
 bool saveLastSource(int source) {
-    if (source < 0 || source > 7) return false;
+    if (source < 0 || source > 8) return false;
     std::error_code ec;
     std::filesystem::create_directories(backupFolder(), ec);
     DWORD error{};
@@ -1158,10 +1171,22 @@ bool saveLastSource(int source) {
 bool readLastSource(int& source) {
     std::string bytes;
     if (!live::ReadBytes(lastSourceFile(), bytes, 8) || bytes.size() < 2 || bytes.size() > 3 ||
-        bytes[0] < '0' || bytes[0] > '7' ||
+        bytes[0] < '0' || bytes[0] > '8' ||
         (bytes.size() == 2 && bytes[1] != '\n') ||
         (bytes.size() == 3 && (bytes[1] != '\r' || bytes[2] != '\n'))) return false;
     source = bytes[0] - '0';
+    return true;
+}
+bool savePicoSourceFromUi() {
+    const auto wide=getText(gUi.picoHeadsetIp);
+    std::string value;
+    for(wchar_t ch:wide)value.push_back(static_cast<char>(ch));
+    if(std::any_of(wide.begin(),wide.end(),[](wchar_t ch){return ch>127;}) ||
+       !pico::ValidHeadsetIp(value) || !pico::SaveHeadsetIp(backupFolder(),value)) {
+        MessageBoxW(gUi.window,L"PICOヘッドセットのIPv4アドレスを入力して保存してください。",
+                    L"PICO direct",MB_ICONWARNING);
+        return false;
+    }
     return true;
 }
 void listProfiles() {
@@ -1211,7 +1236,7 @@ bool readProfile(const std::wstring& name, NamedProfile& p) {
     live::Values gaze{p.left, p.right, p.x, p.y};
     return (p.mode == 0 || p.mode == 1) && p.area >= 1 && p.area <= 100 &&
         p.aspect >= .5f && p.aspect <= 2 && (custom == 0 || custom == 1) &&
-        (p.source >= 0 && p.source <= 7) && live::Valid(gaze);
+        (p.source >= 0 && p.source <= 8) && live::Valid(gaze);
 }
 bool profileFromUi(NamedProfile& p) {
     p.mode = int(SendMessageW(gUi.mode, CB_GETCURSEL, 0, 0));
@@ -1225,7 +1250,7 @@ bool profileFromUi(NamedProfile& p) {
         !parseNumber(getText(gUi.gazeRight), p.right)) return false;
     if (isChecked(gUi.gazeInvert)) p.y = -p.y;
     live::Values gaze{p.left, p.right, p.x, p.y};
-    return (p.mode == 0 || p.mode == 1) && (p.source >= 0 && p.source <= 7) &&
+    return (p.mode == 0 || p.mode == 1) && (p.source >= 0 && p.source <= 8) &&
         p.area >= 1 && p.area <= 100 && p.aspect >= .5f && p.aspect <= 2 && live::Valid(gaze);
 }
 bool writeProfile(const std::wstring& name, const NamedProfile& p) {
@@ -1353,6 +1378,7 @@ int sourceFromRunRoute(const std::string& route) {
     if (route == "ViveStreaming") return 5;
     if (route == "SteamVREye") return 6;
     if (route == "Varjo") return 7;
+    if (route == "PICO") return 8;
     return -1;
 }
 bool readRecordedProviderTelemetry(telemetry::Snapshot& result, int& routeSource) {
@@ -1442,7 +1468,8 @@ void updateLiveMonitor(bool vendor, bool common) {
         gLive.source==3 ? processCount(L"SRanibro.exe")!=0 :
         (gLive.source==4||gLive.source==5) ? processCount(L"ViveStreamingGazeBridge.exe")!=0 :
         gLive.source==6 ? processCount(L"steamvr_gaze_bridge.exe")!=0 :
-        processCount(L"varjo_gaze_bridge.exe")!=0;
+        gLive.source==7 ? processCount(L"varjo_gaze_bridge.exe")!=0 :
+        processCount(L"PicoGazeBridge.exe")!=0;
     gLive.relayFresh = gLive.relaySent = false;
     gLive.receivedPerSecond = gLive.relayPerSecond = 0;
     gLive.providerReady = gLive.source!=0 && telemetryReady && snapshot.registered;
@@ -1551,17 +1578,20 @@ void updateInputStatus() {
         const bool viveBridge = processCount(L"ViveStreamingGazeBridge.exe") != 0;
         const bool steamBridge = processCount(L"steamvr_gaze_bridge.exe") != 0;
         const bool varjoBridge = processCount(L"varjo_gaze_bridge.exe") != 0;
+        const bool picoBridge = processCount(L"PicoGazeBridge.exe") != 0;
         status = toolkit ?
             (bridge ? L"PSVR2 Toolkit CAPIブリッジ起動中" : L"PSVR2 Toolkit CAPIブリッジ停止中") :
             vive ? (viveBridge ? L"VIVE視線ブリッジ起動中（実機未検証）" : L"VIVE視線ブリッジ停止中") :
             source==6 ? (steamBridge ? L"SteamVR視線ブリッジ起動中（実機未検証）" : L"SteamVR視線ブリッジ停止中") :
             source==7 ? (varjoBridge ? L"Varjo視線ブリッジ起動中（実機未検証）" : L"Varjo視線ブリッジ停止中") :
+            source==8 ? (picoBridge ? L"PICO直接購読クライアント起動中" : L"PICO直接購読クライアント停止中") :
             (sranibro ? L"SRanibro起動中" : L"SRanibro停止中");
         status += common ? L"\r\n共通プロバイダー起動中。視線の受理は下の状態で確認。" :
                   toolkit ? L"\r\n共通プロバイダー停止中。Start-PSVR2-Toolkit.cmdを実行。" :
                   vive ? L"\r\n共通プロバイダー停止中。VIVE起動スクリプトを実行。" :
                   source==6 ? L"\r\n共通プロバイダー停止中。Start-SteamVR-Eye.cmdを実行。" :
                   source==7 ? L"\r\n共通プロバイダー停止中。Start-Varjo.cmdを実行。" :
+                  source==8 ? L"\r\nBridge 0.6.0以降が必要。補正変更後は経路を再起動。" :
                          L"\r\n共通プロバイダー停止中。Start-SRanibro.cmdを実行。";
         if (vendor) status += L"\r\nPimax視線プロバイダーを検出。選択した経路へ切り替えると送信だけを停止します。";
         status += L"\r\nTunerのOSC転送は使用しません。";
@@ -1577,6 +1607,8 @@ void updateInputStatus() {
     setText(gUi.inputStart,(vendor || common)?L"選択した経路に切替":L"視線経路を起動");
     EnableWindow(gUi.inputPort, source == 1 && !changing);
     EnableWindow(gUi.inputForward, source == 1 && !changing);
+    EnableWindow(gUi.picoHeadsetIp,!changing);
+    showSourceSettings();
     EnableWindow(gUi.inputStart,!changing);
     EnableWindow(gUi.inputStop,TRUE);
 }
@@ -1584,7 +1616,8 @@ void startRouteOperation(bool stop) {
     if(stop && gRouteStopping && gRouteOperation && WaitForSingleObject(gRouteOperation,0)==WAIT_TIMEOUT)return;
     if(!stop && gRouteOperation && WaitForSingleObject(gRouteOperation,0)==WAIT_TIMEOUT)return;
     const int source=gSelectedSource.load();
-    if(source<0 || source>7)return;
+    if(source<0 || source>8)return;
+    if(!stop && source==8 && !savePicoSourceFromUi())return;
     float port=9020,forward=8888;
     if(!stop && source==1 &&
        (!parseNumber(getText(gUi.inputPort),port) || port!=std::floor(port) || port<1 || port>65535 ||
@@ -1601,7 +1634,7 @@ void startRouteOperation(bool stop) {
         gFrameRuntime.Stop();
         std::ofstream paused(backupFolder()/L"gaze-paused.txt");paused<<"User requested stop\n";
     }
-    const wchar_t* routes[]={L"Pimax",L"Baballonia",L"PSVR2Toolkit",L"SRanibro",L"ViveProEye",L"ViveStreaming",L"SteamVREye",L"Varjo"};
+    const wchar_t* routes[]={L"Pimax",L"Baballonia",L"PSVR2Toolkit",L"SRanibro",L"ViveProEye",L"ViveStreaming",L"SteamVREye",L"Varjo",L"PICO"};
     std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script.wstring()+L"\" ";
     args+=stop?L"-Stop":L"-InputRoute "+std::wstring(routes[source])+L" -OscPort "+std::to_wstring(int(port))+L" -OscForward "+std::to_wstring(int(forward));
     wchar_t system[32768]{};GetSystemDirectoryW(system,DWORD(std::size(system)));
@@ -1839,7 +1872,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         gCreatingPanel = 2;
         control(L"STATIC",L"視線の入力元",SS_LEFT,20,105,180,23);
         gUi.gazeSource=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL,205,101,450,260,kGazeSource);
-        for (const wchar_t* name : {L"Pimax経路（純正優先）",L"Baballonia OSC",L"PSVR2 Toolkit（直接）",L"SRanibro（共通）",L"VIVE Pro Eye（SRanipal・実機未検証）",L"VIVE Streaming（実機未検証）",L"SteamVR視線アクション（実機未検証）",L"Varjo Native SDK（実機未検証）"}) {
+        for (const wchar_t* name : {L"Pimax経路（純正優先）",L"Baballonia OSC",L"PSVR2 Toolkit（直接）",L"SRanibro（共通）",L"VIVE Pro Eye（SRanipal・実機未検証）",L"VIVE Streaming（実機未検証）",L"SteamVR視線アクション（実機未検証）",L"Varjo Native SDK（実機未検証）",L"PICO（Bridge 0.6.0+直接購読）"}) {
             const auto translated=language::Text(name);
             SendMessageW(gUi.gazeSource,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(translated.c_str()));
         }
@@ -1851,11 +1884,21 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         const bool knownRoute=readProviderTelemetry(startupProvider,startupRoute) && startupRoute>=1;
         gSelectedSource=knownRoute?startupRoute:preferCommon?1:0;
         SendMessageW(gUi.gazeSource,CB_SETCURSEL,gSelectedSource.load(),0);
-        control(L"STATIC",L"受信ポート",SS_LEFT,20,150,180,23);
+        gUi.oscControls.push_back(control(L"STATIC",L"受信ポート",SS_LEFT,20,150,180,23));
         gUi.inputPort=control(L"EDIT",L"9020",WS_BORDER | ES_NUMBER | WS_TABSTOP,205,146,110,27,kInputPort);
-        control(L"STATIC",L"OSC転送先（0=なし）",SS_LEFT,20,190,180,23);
+        gUi.oscControls.push_back(gUi.inputPort);
+        gUi.oscControls.push_back(control(L"STATIC",L"OSC転送先（0=なし）",SS_LEFT,20,190,180,23));
         gUi.inputForward=control(L"EDIT",L"8888",WS_BORDER | ES_NUMBER | WS_TABSTOP,205,186,110,27,kInputForward);
-        control(L"STATIC",L"VRCFaceTrackingへ転送する場合は8888",SS_LEFT,335,190,320,23);
+        gUi.oscControls.push_back(gUi.inputForward);
+        gUi.oscControls.push_back(control(L"STATIC",L"VRCFaceTrackingへ転送する場合は8888",SS_LEFT,335,190,320,23));
+        gUi.picoControls.push_back(control(L"STATIC",L"PICOヘッドセットIPv4",SS_LEFT,20,150,180,23));
+        gUi.picoHeadsetIp=control(L"EDIT",L"",WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP,205,146,230,27,kPicoHeadsetIp);
+        SendMessageW(gUi.picoHeadsetIp,EM_SETLIMITTEXT,15,0);
+        const auto picoIp=pico::ReadHeadsetIp(backupFolder());
+        setText(gUi.picoHeadsetIp,std::wstring(picoIp.begin(),picoIp.end()));
+        gUi.picoControls.push_back(gUi.picoHeadsetIp);
+        gUi.picoControls.push_back(control(L"BUTTON",L"IPを保存",WS_TABSTOP | BS_PUSHBUTTON,455,145,180,29,kPicoSave));
+        gUi.picoControls.push_back(control(L"STATIC",L"Bridge 0.6.0以降が必要。ADB自動導入なし。\r\nヘッドセットUDP9030 → PC一時ポート → UDP5556。Cymple不要。",SS_LEFT,20,185,650,47));
         { std::ifstream ports(backupFolder()/L"osc-settings.txt");int input=0,forward=-1;
           if(ports>>input>>forward && input>=1 && input<=65535 && forward>=0 && forward<=65535 && input!=forward) {
               setText(gUi.inputPort,std::to_wstring(input));setText(gUi.inputForward,std::to_wstring(forward));
@@ -1920,7 +1963,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         }
         if (LOWORD(wParam) == kGazeSource && HIWORD(wParam) == CBN_SELCHANGE) {
             const int source=int(SendMessageW(gUi.gazeSource,CB_GETCURSEL,0,0));
-            if (source<0 || source>7) return 0;
+            if (source<0 || source>8) return 0;
             gSelectedSource=source;
             if (!saveLastSource(source))
                 MessageBoxW(gUi.window,L"視線入力元の選択を次回起動用に保存できませんでした。",
@@ -1956,6 +1999,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             case kProfileSave: saveProfileFromUi(); return 0;
             case kProfileSwitch: switchProfile(); return 0;
             case kInputTab: showPanel(2); return 0;
+            case kPicoSave: savePicoSourceFromUi();return 0;
             case kFrameTab: showPanel(3); return 0;
             case kFrameStart: gFrameRuntime.Retry();updateFrameStatus();return 0;
             case kFrameStop: gFrameRuntime.Stop();updateFrameStatus();return 0;
@@ -2080,7 +2124,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                      sourceFromRunRoute("ViveProEye") == 4 &&
                      sourceFromRunRoute("ViveStreaming") == 5 &&
                      sourceFromRunRoute("SteamVREye") == 6 &&
-                     sourceFromRunRoute("Varjo") == 7 &&
+                      sourceFromRunRoute("Varjo") == 7 &&
+                      sourceFromRunRoute("PICO") == 8 &&
                      sourceFromRunRoute("unknown") == -1 ? 0 : 35;
         }
         else if (wcscmp(argv[1], L"--profile-self-test") == 0 && argc == 3) {
@@ -2097,12 +2142,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                 actual.customAspect == original.customAspect && actual.x == original.x &&
                 actual.y == original.y && actual.left == original.left && actual.right == original.right &&
                 !validProfileName(L"../escape") && !validProfileName(L"bad:name");
-            for (int legacySource : {0,1,3,4,5}) {
+            for (int legacySource : {0,1,3,4,5,6,7,8}) {
                 original.source=legacySource;
                 pass=pass && writeProfile(L"LegacyProfileTest",original) &&
                     readProfile(L"LegacyProfileTest",actual) && actual.source==legacySource;
             }
-            original.source=8;
+            original.source=9;
             pass=pass && writeProfile(L"InvalidSourceTest",original) &&
                 !readProfile(L"InvalidSourceTest",actual);
              std::wstring restored;
@@ -2110,8 +2155,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                  readLastProfile(restored) && restored==L"日本語 Profile" &&
                  !saveLastProfile(L"../escape");
              int restoredSource=-1;
-             pass=pass && saveLastSource(7) && readLastSource(restoredSource) &&
-                 restoredSource==7 && !saveLastSource(8);
+             pass=pass && saveLastSource(8) && readLastSource(restoredSource) &&
+                 restoredSource==8 && !saveLastSource(9) &&
+                 pico::SaveHeadsetIp(backupFolder(),"10.23.45.67") &&
+                 pico::ReadHeadsetIp(backupFolder())=="10.23.45.67" &&
+                 !pico::SaveHeadsetIp(backupFolder(),"10.23.45.999") &&
+                 pico::ReadHeadsetIp(backupFolder())=="10.23.45.67";
             result = pass ? 0 : 37;
         }
         else if (wcscmp(argv[1], L"--startup-self-test") == 0 && argc == 3) {

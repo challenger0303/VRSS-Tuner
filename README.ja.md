@@ -4,9 +4,9 @@
 
 VRSS Tunerは、NVIDIA VRSS2の設定と、左右の視線データを共通VRSSプロバイダーへ送るためのWindows用試験ツールです。BaballoniaのOSC視線データを受け取り、OpenVRのHMD投影情報を使って左右別に位置を計算します。VRChatのファイル変更やゲームへのDLL注入は行いません。
 
-**実機報告：Pimax Dream Air（開発者・NVIDIA 610.88）、Steam Frame（PR貢献者・NVIDIA 596.02）。** その他のHMDやPCは未確認です。NVIDIA、Pimax、Valve、VRChatの公式製品ではありません。
+**描画追従の実機報告：Pimax Dream Air（開発者・NVIDIA 610.88）、Steam Frame（PR貢献者・NVIDIA 596.02）。** PICO／616.92でも通常のEAC保護付きVRChatでconsumer接続と実視線の提出を確認しましたが、高画質領域の追従は目視確認できていません。NVIDIA、Pimax、Valve、VRChatの公式製品ではありません。
 
-PSVR2の直接経路に加え、VIVE Pro EyeのSRanipal経路とVIVE Streaming経路を試験的に追加しました。PICOは受信プロトコル診断、VarjoはSDKブリッジの模擬試験までです。[HMD別の対応状況](docs/HMD-GAZE-COMPATIBILITY.md)に検証範囲を記載しています。Frame専用経路以外の新しいHMDでのVRSS追従は未確認です。
+PSVR2の直接経路に加え、VIVE Pro EyeのSRanipal経路とVIVE Streaming経路を試験的に追加しました。[PICO直接入力](docs/PICO.md)は開発版PicoFacialBridgeを独立購読し、VRCFTやリレーを必要とせず、従来のAvatarセッションと共存します。Tunerの入力元選択・IPv4保存とNativeAOTクライアントの同梱に対応します。公開Bridge0.5.0は非対応です。616.92は精密一致の実験契約を明示した場合のみ使用でき、既存の起動／プロファイル要件は変わりません。[HMD別の対応状況](docs/HMD-GAZE-COMPATIBILITY.md)に検証範囲を記載しています。
 
 インストーラーにはTuner、共通視線プロバイダー、OpenVR投影情報取得ツール、日英ガイド、読み取り専用の導入診断を同梱しています。監査済みNVIDIAドライバーの組み込み契約は標準経路が610.88、Frame専用経路が596.02です。別の実体は[実験用ドライバー契約](docs/DRIVER-CONTRACTS.md)を明示したときだけ試せます。Frame専用経路は596.02のままです。VRSSを許可するVRChatプロファイル、SteamVR、視線入力、VRChat内のMSAAも必要です。共通プロバイダーは非公開のドライバーインターフェースを使うため、契約と一致しないドライバーでの起動を拒否します。診断合格だけではHMD内の視線追従を証明できません。
 
@@ -25,6 +25,8 @@ Frameでは旧来のEDID診断やStart-Providerを使わず、[Frame専用手順
 ドライバー非対応やVRSS許可設定の不足が表示された場合、強制起動しないでください。診断結果、ドライバー版、HMD機種を添えてIssueへ報告できます。個人情報は投稿前に削除してください。
 
 ## ソースからのビルド
+
+マネージドクライアントには.NET SDKも必要です。PICOは既定で.NET 9を使い、パッケージスクリプトの`-PicoTargetFramework net10.0`でPICOクライアントに.NET 10を選択できます。
 
 Visual Studio 2022の「C++によるデスクトップ開発」とInno Setup 6を入れてください。PowerShellから`vrss-tuner\test.ps1`で独立テスト、`vrss-tuner\Build-ReleaseCandidate.ps1`でテスト・ZIP内ファイル検証・インストーラー作成を一括実行できます。`Build-Portable.ps1`は開発用ZIPを作ります。ビルドツールは`vswhere`で検出し、必要なら`VCVARS64_BAT`で指定できます。NVAPIとOpenVRのビルド用ファイルは各ライセンス表示とともに`third_party`にあります。
 

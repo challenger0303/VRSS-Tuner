@@ -10,5 +10,5 @@ $line = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc /O2 /
     (Join-Path $build 'driver_identity_test.obj') + '" /Fe"' + $testExe + '"'
 & cmd.exe /d /c $line
 if ($LASTEXITCODE -ne 0) { throw 'Driver identity test compilation failed.' }
-& $testExe
+& $testExe (Join-Path $PSScriptRoot 'driver-contracts\616.92.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Driver identity tests failed.' }

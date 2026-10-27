@@ -128,7 +128,7 @@ static bool CommonSourceSelected(const fs::path& data) {
     std::ifstream input(data/L"last-source.txt",std::ios::binary);
     std::string selected;std::getline(input,selected);
     if(!selected.empty() && selected.back()=='\r')selected.pop_back();
-    return selected.size()==1 && selected[0]>='1' && selected[0]<='7';
+    return selected.size()==1 && selected[0]>='1' && selected[0]<='8';
 }
 
 static std::wstring Quote(const std::wstring& value) {

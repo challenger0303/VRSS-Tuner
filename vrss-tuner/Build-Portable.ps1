@@ -1,4 +1,5 @@
-﻿param([string]$PimaxBridgeDll = '', [string]$VarjoSdk = '', [switch]$RequireAllBridges)
+param([string]$PimaxBridgeDll = '', [string]$VarjoSdk = '', [switch]$RequireAllBridges,
+      [string]$PicoTargetFramework = 'net9.0')
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $research = Split-Path -Parent $here
@@ -48,6 +49,11 @@ $line = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc /O2 /
 if ($LASTEXITCODE -ne 0) { throw 'SteamVR autostart helper build failed' }
 Copy-Item -LiteralPath (Join-Path $here 'portable\vrss-tuner.vrmanifest') -Destination (Join-Path $bundle 'vrss-tuner.vrmanifest')
 Copy-Item -LiteralPath (Join-Path $here 'portable\calibration.txt') -Destination (Join-Path $common 'calibration.txt')
+$driverContracts = Join-Path $common 'driver-contracts'
+New-Item -ItemType Directory -Path $driverContracts -ErrorAction Stop | Out-Null
+Copy-Item -LiteralPath (Join-Path $research 'common-vrss-provider\driver-contracts\616.92.txt') -Destination $driverContracts
+Copy-Item -LiteralPath (Join-Path $here 'portable\Test-Driver-Contract.ps1') -Destination $bundle
+Copy-Item -LiteralPath (Join-Path $here 'portable\Test-Driver-Contract.cmd') -Destination $bundle
 $steamBridge = Join-Path $bundle 'steamvr-gaze-bridge'
 New-Item -ItemType Directory -Path $steamBridge -ErrorAction Stop | Out-Null
 $steamSource = Join-Path $research 'steamvr-gaze-bridge\bridge.cpp'
@@ -72,6 +78,16 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $viveBridge 
     throw 'VIVE gaze bridge native build failed'
 }
 Remove-Item -LiteralPath (Join-Path $viveBridge 'ViveStreamingGazeBridge.pdb') -ErrorAction SilentlyContinue
+$picoBridge = Join-Path $bundle 'pico-gaze-bridge'
+# NativeAOT is self-contained, like the VIVE client: no runtime installer or
+# machine-wide .NET changes. PicoTargetFramework controls both restore and build.
+& dotnet publish (Join-Path $research 'pico-gaze-bridge\PicoGazeBridge.csproj') `
+    -c Release -r win-x64 -p:PicoTargetFramework=$PicoTargetFramework `
+    -p:PublishAot=true -p:StripSymbols=true -o $picoBridge | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $picoBridge 'PicoGazeBridge.exe'))) {
+    throw 'PICO direct gaze client self-contained build failed'
+}
+Remove-Item -LiteralPath (Join-Path $picoBridge 'PicoGazeBridge.pdb') -ErrorAction SilentlyContinue
 $varjoBridge = Join-Path $bundle 'varjo-gaze-bridge'
 New-Item -ItemType Directory -Path $varjoBridge -ErrorAction Stop | Out-Null
 if ($VarjoSdk) {
@@ -95,16 +111,19 @@ if (Test-Path -LiteralPath $pimaxBuilt -PathType Leaf) {
 foreach ($name in @('Gaze-Route.ps1','Set-Gaze-Route.ps1','Audit-Driver.ps1','Test-Setup.ps1','Start-Provider.ps1','Start-Common-Session.ps1','Stop-Provider.ps1','Start-VRChat-HMD-Key.ps1','Start-VRChat-Candidate.ps1','Install-Steam-Launch-Bridge.ps1','Audit-Driver.cmd','Test-Setup.cmd','Start-Provider.cmd','Start-Provider-Only.cmd','Stop-Provider.cmd','Start-VRChat-HMD-Key.cmd','Start-VRChat-Candidate.cmd','Install-Steam-Launch-Bridge.cmd','Install-SteamVR-Autostart.cmd','Remove-SteamVR-Autostart.cmd','Start-PSVR2-Toolkit.cmd','Start-SRanibro.cmd','Start-Vive-Pro-Eye.cmd','Start-Vive-Streaming.cmd','Start-SteamVR-Eye.cmd','Start-Varjo.cmd')) {
     Copy-Item -LiteralPath (Join-Path $here "portable\$name") -Destination (Join-Path $bundle $name)
 }
+foreach ($name in @('Pico-Source.ps1','Start-PICO.cmd')) {
+    Copy-Item -LiteralPath (Join-Path $here "portable\$name") -Destination (Join-Path $bundle $name)
+}
 # The .cmd launchers use Windows PowerShell 5.1, which reads UTF-8 scripts
 # without a BOM as the legacy ANSI code page. Normalize every shipped script.
-foreach ($name in @('Gaze-Route.ps1','Set-Gaze-Route.ps1','Audit-Driver.ps1','Test-Setup.ps1','Start-Provider.ps1','Start-Common-Session.ps1','Stop-Provider.ps1','Start-VRChat-HMD-Key.ps1','Start-VRChat-Candidate.ps1','Install-Steam-Launch-Bridge.ps1')) {
+foreach ($name in @('Gaze-Route.ps1','Set-Gaze-Route.ps1','Audit-Driver.ps1','Test-Setup.ps1','Start-Provider.ps1','Start-Common-Session.ps1','Stop-Provider.ps1','Start-VRChat-HMD-Key.ps1','Start-VRChat-Candidate.ps1','Install-Steam-Launch-Bridge.ps1','Pico-Source.ps1','Test-Driver-Contract.ps1')) {
     $path = Join-Path $bundle $name
     $source = [IO.File]::ReadAllText($path, [Text.UTF8Encoding]::new($false, $true))
     [IO.File]::WriteAllText($path, $source, [Text.UTF8Encoding]::new($true))
 }
 Copy-Item -LiteralPath (Join-Path $here 'portable\README.md') -Destination (Join-Path $bundle 'README.md')
 Copy-Item -LiteralPath (Join-Path $here 'portable\README.en.md') -Destination (Join-Path $bundle 'README.en.md')
-foreach ($name in @('STEAM-FRAME.md','DRIVER-CONTRACTS.md')) {
+foreach ($name in @('STEAM-FRAME.md','DRIVER-CONTRACTS.md','PICO.md')) {
     Copy-Item -LiteralPath (Join-Path $research "docs\$name") -Destination (Join-Path $bundle $name)
 }
 Copy-Item -LiteralPath (Join-Path $research 'docs\FACE-TRACKING-COEXISTENCE.md') -Destination (Join-Path $bundle 'FACE-TRACKING-COEXISTENCE.md')
@@ -116,20 +135,25 @@ $notices = [IO.File]::ReadAllText((Join-Path $research 'THIRD_PARTY_NOTICES.md')
 $notices = $notices.Replace('](LICENSE)', '](LICENSE.txt)').Replace('](third_party/nvapi/License.txt)', '](NVAPI-LICENSE.txt)').Replace('](third_party/openvr/LICENSE)', '](OpenVR-LICENSE.txt)')
 [IO.File]::WriteAllText((Join-Path $bundle 'THIRD_PARTY_NOTICES.md'), $notices, [Text.UTF8Encoding]::new($false))
 $files = @('VRSS Tuner.exe','openvr_api.dll','steam_vrchat_launch.exe','steamvr_autostart.exe','vrss-tuner.vrmanifest','common-vrss-provider/common_vrss_provider.exe',
+    'common-vrss-provider/driver-contracts/616.92.txt','Test-Driver-Contract.ps1','Test-Driver-Contract.cmd',
     'common-vrss-provider/export_openvr_geometry.exe','common-vrss-provider/openvr_api.dll',
     'common-vrss-provider/calibration.txt',
     'steamvr-gaze-bridge/steamvr_gaze_bridge.exe','steamvr-gaze-bridge/openvr_api.dll','steamvr-gaze-bridge/eye_actions.json',
     'psvr2-gaze-bridge/psvr2_gaze_bridge.exe','psvr2-gaze-bridge/PSVR2Toolkit-LICENSE.txt',
     'vive-streaming-gaze-bridge/ViveStreamingGazeBridge.exe',
+    'Pico-Source.ps1','Start-PICO.cmd',
     'Gaze-Route.ps1','Set-Gaze-Route.ps1','Audit-Driver.ps1','Test-Setup.ps1','Start-Provider.ps1','Start-Common-Session.ps1','Stop-Provider.ps1','Start-VRChat-HMD-Key.ps1','Start-VRChat-Candidate.ps1','Install-Steam-Launch-Bridge.ps1',
     'Audit-Driver.cmd','Test-Setup.cmd','Start-Provider.cmd','Start-Provider-Only.cmd','Stop-Provider.cmd','Start-VRChat-HMD-Key.cmd','Start-VRChat-Candidate.cmd','Install-Steam-Launch-Bridge.cmd','Install-SteamVR-Autostart.cmd','Remove-SteamVR-Autostart.cmd',
     'Start-PSVR2-Toolkit.cmd','Start-SRanibro.cmd',
     'Start-Vive-Pro-Eye.cmd','Start-Vive-Streaming.cmd','Start-SteamVR-Eye.cmd','Start-Varjo.cmd',
     'README.md','README.en.md','FACE-TRACKING-COEXISTENCE.md',
     'HMD-GAZE-COMPATIBILITY.md','LICENSE.txt','THIRD_PARTY_NOTICES.md',
-    'OpenVR-LICENSE.txt','NVAPI-LICENSE.txt','STEAM-FRAME.md','DRIVER-CONTRACTS.md')
+    'OpenVR-LICENSE.txt','NVAPI-LICENSE.txt','STEAM-FRAME.md','DRIVER-CONTRACTS.md','PICO.md')
 foreach ($optional in @('varjo-gaze-bridge/varjo_gaze_bridge.exe','pimax-eye-bridge/driver_sranibro_eye.dll')) {
     if (Test-Path -LiteralPath (Join-Path $bundle $optional) -PathType Leaf) { $files += $optional }
+}
+foreach ($runtimeFile in Get-ChildItem -LiteralPath $picoBridge -File -Recurse) {
+    $files += $runtimeFile.FullName.Substring($bundle.Length + 1).Replace('\','/')
 }
 if ($RequireAllBridges) {
     foreach ($required in @('varjo-gaze-bridge/varjo_gaze_bridge.exe','pimax-eye-bridge/driver_sranibro_eye.dll')) {

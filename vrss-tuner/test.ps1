@@ -20,6 +20,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell input recovery test failed.
 if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell route concurrency test failed.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-start-common-session.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell common-session smoke test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-pico-source.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'PICO source configuration and launch tests failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-driver-contract.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Read-only experimental contract launcher tests failed.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-portable-hash.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell portable hash test failed.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-steam-launch-bridge.ps1')

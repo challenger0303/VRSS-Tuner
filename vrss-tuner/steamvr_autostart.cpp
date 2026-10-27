@@ -75,7 +75,7 @@ static int LastSource() {
     if(!size || size>=std::size(local))return -1;
     std::ifstream input(fs::path(local)/L"VRSS Tuner"/L"last-source.txt",std::ios::binary);
     std::string source;std::getline(input,source);
-    return source.size()==1 && source[0]>='0' && source[0]<='7'?source[0]-'0':-1;
+    return source.size()==1 && source[0]>='0' && source[0]<='8'?source[0]-'0':-1;
 }
 
 static bool SameBytes(const fs::path& first,const fs::path& second) {
@@ -127,7 +127,7 @@ int wmain(int argc,wchar_t** argv) {
     const int source=LastSource();
     if(source<=0 || Running(L"common_vrss_provider.exe") || Running(L"vrss_gaze_provider.exe"))return 0;
     static const wchar_t* routes[]={L"",L"Baballonia",L"PSVR2Toolkit",L"SRanibro",
-        L"ViveProEye",L"ViveStreaming",L"SteamVREye",L"Varjo"};
+        L"ViveProEye",L"ViveStreaming",L"SteamVREye",L"Varjo",L"PICO"};
     const auto launcher=bundle/L"Start-Provider-Only.cmd";
     if(!fs::is_regular_file(launcher))return 7;
     const std::wstring arguments=std::wstring(routes[source])+L" wait existing-steamvr";

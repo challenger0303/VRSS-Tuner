@@ -24,6 +24,10 @@ int main() {
         L"Common provider stopped. Run Start-SRanibro.cmd.") return 11;
     if (language::Text(L"視線入力元の選択を次回起動用に保存できませんでした。") !=
         L"The gaze-source selection could not be saved for the next launch.") return 12;
+    if (language::Text(L"PICO（Bridge 0.6.0+直接購読）") !=
+        L"PICO (direct Bridge 0.6.0+)") return 16;
+    if (language::Text(L"PICOヘッドセットのIPv4アドレスを入力して保存してください。") !=
+        L"Enter and save the PICO headset IPv4 address.") return 17;
     if (language::Text(L"Pimax経路が現在動作中です。共通経路のプロファイルは適用できません。\n共通経路へ切り替える場合は、先にVRChatとPimax側プロバイダーを通常終了してください。") !=
         L"The Pimax path is running. A common-path profile cannot be applied.\nTo switch to the common path, close VRChat and the Pimax provider normally first.") return 13;
     const auto status = language::Text(L"保存値: オン / 大きさ 50 / 縦横比 1");

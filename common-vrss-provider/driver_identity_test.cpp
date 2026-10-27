@@ -4,8 +4,9 @@
 #include "driver_contract_file.h"
 #include <cassert>
 #include <iostream>
+#include <fstream>
 
-int main() {
+int main(int argc, char** argv) {
     using namespace driver;
     assert(Select(k59602.apiHash, "UNAVAILABLE", k59602.umdHash)==&k59602);
     assert(Select("unused", k61088.apiHash, k61088.umdHash)==&k61088);
@@ -51,5 +52,29 @@ int main() {
     changed=contract;changed.replace(changed.find(k61088.apiHash),64,std::string(64,'z'));
     assert(!ParseExactContract(changed));
     assert(!ParseExactContract(contract+","));
+    assert(argc == 2);
+    std::ifstream candidateFile(argv[1], std::ios::binary);
+    const std::string candidateText((std::istreambuf_iterator<char>(candidateFile)), {});
+    const auto candidate = ParseExactContract(candidateText);
+    assert(candidate && candidate->version == "616.92" && candidate->module == L"nvapi64_impl.dll");
+    assert(candidate->vtableRva == 0x49f5e8);
+    assert((candidate->methodRvas == std::array<uintptr_t,8>{0x305330,0x3306e0,0x330740,0x32fae0,
+        0x330270,0x32f230,0x32f980,0x32e630}));
+    assert(MatchesExactImages(*candidate, "UNAVAILABLE", candidate->apiHash, candidate->umdHash));
+    assert(!MatchesExactImages(*candidate, "UNAVAILABLE", k61088.apiHash, candidate->umdHash));
+    assert(!MatchesExactImages(*candidate, "UNAVAILABLE", candidate->apiHash, k61088.umdHash));
+    assert(!Select("UNAVAILABLE", candidate->apiHash, candidate->umdHash)); // Remains explicit opt-in.
+    for (uintptr_t base : {uintptr_t{0x180000000}, uintptr_t{0x7ffb12340000}}) {
+        auto methods = candidate->methodRvas;
+        for (auto& method : methods) method += base;
+        assert(MethodsMatch(*candidate, base, methods));
+        for (size_t i = 0; i < methods.size(); ++i) {
+            auto changedMethod = methods; ++changedMethod[i];
+            assert(!MethodsMatch(*candidate, base, changedMethod));
+        }
+        assert(TableAddressMatches(*candidate, base, 0x1000000, base + 0x49f5e8));
+        assert(!TableAddressMatches(*candidate, base, 0x1000000, base + 0x49f5f0));
+    }
     std::cout<<"DRIVER_IDENTITY_PASS 59602 61088 missing_images mixed_versions every_slot table_bounds overflow exact_contract_parser\n";
+    std::cout<<"EXPERIMENTAL_61692_PASS file exact_images every_slot pinned_table opt_in_only\n";
 }

@@ -1,7 +1,7 @@
-param([ValidateSet('Baballonia','PSVR2Toolkit','SRanibro','ViveProEye','ViveStreaming','SteamVREye','Varjo')]
+param([ValidateSet('Baballonia','PSVR2Toolkit','SRanibro','ViveProEye','ViveStreaming','SteamVREye','Varjo','PICO')]
       [string]$InputRoute='Baballonia',
       [ValidateRange(0,30)][int]$HotAttachWaitSeconds=8,
-      [switch]$ProviderOnly,[switch]$WaitForHeadset,[switch]$RequireExistingSteamVR,
+      [switch]$ProviderOnly,[switch]$WaitForHeadset,[switch]$RequireExistingSteamVR,[string]$HeadsetIp,
       [ValidateRange(1,65535)][int]$OscPort=9020,
       [ValidateRange(0,65535)][int]$OscForward=8888)
 $ErrorActionPreference = 'Stop'
@@ -64,6 +64,11 @@ function Test-NvidiaConsumer {
 }
 
 try {
+    $picoArgs = @{}
+    if ($InputRoute -eq 'PICO') {
+        . (Join-Path $bundle 'Pico-Source.ps1')
+        $picoArgs.HeadsetIp = Get-PicoHeadsetIp (Join-Path $env:LOCALAPPDATA 'VRSS Tuner') $HeadsetIp
+    }
     if ($WaitForHeadset -and $InputRoute -eq 'SRanibro') {
         $deadline = (Get-Date).AddSeconds(120)
         while (-not (Get-Process SRanibro -ErrorAction SilentlyContinue)) {
@@ -104,7 +109,7 @@ try {
     $needsKeyedLaunch = [bool]$setup.hmdTestBranch
     Write-Output ('Starting common gaze provider from ' + $InputRoute + '...')
     & (Join-Path $bundle 'Start-Provider.ps1') -InputRoute $InputRoute `
-        -AllowRunningVRChat:([bool](Get-Process VRChat -ErrorAction SilentlyContinue)) -OscPort $OscPort -OscForward $OscForward
+        -AllowRunningVRChat:([bool](Get-Process VRChat -ErrorAction SilentlyContinue)) -OscPort $OscPort -OscForward $OscForward @picoArgs
     if (-not (Get-Process common_vrss_provider -ErrorAction SilentlyContinue)) {
         throw 'The common gaze provider did not stay running.'
     }

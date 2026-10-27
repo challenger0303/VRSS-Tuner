@@ -1,7 +1,7 @@
-param([ValidateSet('Pimax','Baballonia','PSVR2Toolkit','SRanibro','ViveProEye','ViveStreaming','SteamVREye','Varjo')]
+param([ValidateSet('Pimax','Baballonia','PSVR2Toolkit','SRanibro','ViveProEye','ViveStreaming','SteamVREye','Varjo','PICO')]
       [string]$InputRoute='Pimax', [switch]$Stop,
       [ValidateRange(1,65535)][int]$OscPort=9020,
-      [ValidateRange(0,65535)][int]$OscForward=8888,
+      [ValidateRange(0,65535)][int]$OscForward=8888,[string]$HeadsetIp,
       [ValidateSet('open','close')][string]$PimaxSenderAction,[switch]$ForceStopOwnedProvider)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Gaze-Route.ps1')
@@ -48,6 +48,11 @@ try {
     if ($InputRoute -eq 'Baballonia' -and ($OscPort -eq $OscForward -or $OscPort -eq 5556 -or $OscForward -eq 5556)) {
         throw 'OSC receive, forward, and provider ports must be different.'
     }
+    $picoArgs = @{}
+    if ($InputRoute -eq 'PICO') {
+        . (Join-Path $PSScriptRoot 'Pico-Source.ps1')
+        $picoArgs.HeadsetIp = Get-PicoHeadsetIp $data $HeadsetIp
+    }
     Remove-Item -LiteralPath $paused -ErrorAction SilentlyContinue
     $sameRoute = (Get-ActiveGazeRoute) -eq $InputRoute
     $activeRun = Get-ActiveGazeRun
@@ -70,6 +75,9 @@ try {
         $settings = "$OscPort`n$OscForward`n"
         $sameRoute = $sameRoute -and $activeReady -and [int]$status.inputPort -eq $OscPort -and [int]$status.oscForward -eq $OscForward
     }
+    if ($InputRoute -eq 'PICO' -and $sameRoute -and $activeRun) {
+        $sameRoute = (Get-PicoHeadsetIp $activeRun '') -eq $picoArgs.HeadsetIp
+    }
     if ((Get-Process common_vrss_provider -ErrorAction SilentlyContinue) -and
         $sameRoute -and $sameRuntime -and $activeReady -and $InputRoute -ne 'Pimax' -and
         (Test-GazeSourceBridge $activeRun $InputRoute) -and
@@ -79,7 +87,7 @@ try {
     }
     if ($InputRoute -ne 'Pimax' -and $sameRuntime -and $activeReady) {
         & (Join-Path $PSScriptRoot 'Start-Provider.ps1') -InputOnly -RunDirectory $activeRun -InputRoute $InputRoute `
-            -OscPort $OscPort -OscForward $OscForward | Out-Null
+            -OscPort $OscPort -OscForward $OscForward @picoArgs | Out-Null
         $started = $true
         return
     }
@@ -88,7 +96,7 @@ try {
         Set-PimaxGazeSender open
     } else {
         & (Join-Path $PSScriptRoot 'Start-Common-Session.ps1') -InputRoute $InputRoute -ProviderOnly `
-            -OscPort $OscPort -OscForward $OscForward | Out-Null
+            -OscPort $OscPort -OscForward $OscForward @picoArgs | Out-Null
     }
     $started = $true
     if (Test-Path -LiteralPath $paused -PathType Leaf) {

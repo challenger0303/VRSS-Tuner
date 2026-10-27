@@ -6,6 +6,10 @@
 /common-vrss-provider/*.obj
 /pico-gaze-probe/bin/
 /pico-gaze-probe/obj/
+/pico-gaze-bridge/bin/
+/pico-gaze-bridge/obj/
+/pico-gaze-tests/bin/
+/pico-gaze-tests/obj/
 /pimax-eye-bridge/bin/
 /steamvr-gaze-bridge/*.exe
 /steamvr-gaze-bridge/*.obj

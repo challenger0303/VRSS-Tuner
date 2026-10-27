@@ -45,6 +45,7 @@ function Test-GazeSourceBridge([string]$Run,[string]$Route) {
         'ViveStreaming' { @('vive-bridge.pid','vive-streaming-gaze-bridge\ViveStreamingGazeBridge.exe') }
         'SteamVREye' { @('steamvr-bridge.pid','steamvr-gaze-bridge\steamvr_gaze_bridge.exe') }
         'Varjo' { @('varjo-bridge.pid','varjo-gaze-bridge\varjo_gaze_bridge.exe') }
+        'PICO' { @('pico-bridge.pid','pico-gaze-bridge\PicoGazeBridge.exe') }
     }
     if (-not $bridge) { return $true }
     try {
@@ -108,7 +109,8 @@ function Stop-GazeInputBridges([string]$Run) {
         @('psvr2-bridge.pid','psvr2-gaze-bridge\psvr2_gaze_bridge.exe'),
         @('vive-bridge.pid','vive-streaming-gaze-bridge\ViveStreamingGazeBridge.exe'),
         @('steamvr-bridge.pid','steamvr-gaze-bridge\steamvr_gaze_bridge.exe'),
-        @('varjo-bridge.pid','varjo-gaze-bridge\varjo_gaze_bridge.exe'))) {
+        @('varjo-bridge.pid','varjo-gaze-bridge\varjo_gaze_bridge.exe'),
+        @('pico-bridge.pid','pico-gaze-bridge\PicoGazeBridge.exe'))) {
         $record = Join-Path $Run $item[0]
         if (-not (Test-Path -LiteralPath $record -PathType Leaf)) { continue }
         $id = 0

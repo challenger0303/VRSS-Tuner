@@ -2,23 +2,24 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <string_view>
 
 namespace driver {
 struct Identity {
-    const char* version;
-    const wchar_t* module;
-    std::string_view apiHash,umdHash;
+    std::string version;
+    std::wstring module;
+    std::string apiHash,umdHash;
     uintptr_t vtableRva;
     std::array<uintptr_t,8> methodRvas;
 };
-inline constexpr Identity k59602{
+inline const Identity k59602{
     "596.02",L"nvapi64.dll",
     "a902fe11d59166285c264aea4695d1978eb6ce6cf0d4c477fcddcac1527ddfb2",
     "ec0cb8ade4bf81e6b6835832e7e4d665d59600c616967577fae162455edb505c",
     0x480280,{0x2fb260,0x3289d0,0x328a30,0x327dd0,0x328560,0x327510,0x327c70,0x3268d0}};
 // Retain upstream's exact 610.88 contract for existing non-Frame providers.
-inline constexpr Identity k61088{
+inline const Identity k61088{
     "610.88",L"nvapi64_impl.dll",
     "df6455ccf83e43cfe68f405af1eec4e053c7f95da998bf358053b7583980c2f4",
     "04c01cfc849e5b58ad50da89dc83bff15f15847684de7964ff5900fedfab18fe",

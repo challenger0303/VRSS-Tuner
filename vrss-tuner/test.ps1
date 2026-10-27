@@ -3,10 +3,40 @@ $here = $PSScriptRoot
 . (Join-Path $here 'Find-Vcvars.ps1')
 $vcvars = Find-Vcvars64
 New-Item -ItemType Directory -Path (Join-Path $here 'build') -Force | Out-Null
+$inputExe = Join-Path $here 'build\gaze_input_test.exe'
+$inputBuild = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 "' +
+    (Join-Path $here 'gaze_input_test.cpp') + '" /Fo"' + (Join-Path $here 'build\gaze_input_test.obj') + '" /Fe"' + $inputExe + '"'
+& cmd.exe /d /c $inputBuild
+if ($LASTEXITCODE -ne 0) { throw 'Gaze input compilation failed.' }
+& $inputExe
+if ($LASTEXITCODE -ne 0) { throw 'Gaze input network regression tests failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-start-provider.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell provider launch smoke test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-gaze-route.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell gaze route switch test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-input-recovery.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell input recovery test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-route-concurrency.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell route concurrency test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-start-common-session.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell common-session smoke test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-portable-hash.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell portable hash test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'test-steam-launch-bridge.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Steam launch bridge smoke test failed.' }
 & (Join-Path (Split-Path -Parent $here) 'common-vrss-provider\test-driver-identity.ps1')
 & (Join-Path $here 'test-frame-runtime.ps1')
 & (Join-Path $here 'test-frame-gate.ps1')
 & (Join-Path $here 'test-frame-launch.ps1')
+$research = Split-Path -Parent $here
+$identityExe = Join-Path $here 'build\hmd_candidate_identity_test.exe'
+$identityBuild = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 /I"' +
+    $research + '" "' + (Join-Path $research 'common-vrss-provider\hmd_candidate_identity_test.cpp') +
+    '" /Fo"' + (Join-Path $here 'build\hmd_candidate_identity_test.obj') + '" /Fe"' + $identityExe + '"'
+& cmd.exe /d /c $identityBuild
+if ($LASTEXITCODE -ne 0) { throw 'HMD identity test compilation failed.' }
+& $identityExe
+if ($LASTEXITCODE -ne 0) { throw 'HMD identity tests failed.' }
 $exe = Join-Path $here 'build\gaze_settings_test.exe'
 $line = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 /DUNICODE /D_UNICODE "' +
     (Join-Path $here 'gaze_settings_test.cpp') + '" /Fo"' + (Join-Path $here 'build\gaze_settings_test.obj') +
@@ -18,6 +48,9 @@ $fixture = Join-Path $here ('build\gaze-tests-' + (Get-Date -Format 'yyyyMMddTHH
 if ($LASTEXITCODE -ne 0) { throw 'Gaze settings tests failed.' }
 $profileExe = Join-Path $here 'build\VRSS Tuner.profile-test.exe'
 & (Join-Path $here 'build.ps1') -OutputPath $profileExe | Out-Null
+$monitorRun = Start-Process -FilePath $profileExe -ArgumentList '--self-test' -WindowStyle Hidden -Wait -PassThru
+if ($monitorRun.ExitCode -ne 0) { throw "Gaze route self-test failed: $($monitorRun.ExitCode)" }
+Write-Output 'GAZE_ROUTE_PASS all_sources unknown_route'
 $profileFolder = Join-Path $fixture 'isolated-profile-data'
 $profileRun = Start-Process -FilePath $profileExe -ArgumentList ('--profile-self-test "' + $profileFolder + '"') -WindowStyle Hidden -Wait -PassThru
 if ($profileRun.ExitCode -ne 0) { throw "Profile round-trip failed: $($profileRun.ExitCode)" }
@@ -45,6 +78,14 @@ $relayBuild = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc
 if ($LASTEXITCODE -ne 0) { throw 'Baballonia relay compilation failed.' }
 & $relayExe
 if ($LASTEXITCODE -ne 0) { throw 'Baballonia relay tests failed.' }
+$telemetryExe = Join-Path $here 'build\provider_telemetry_test.exe'
+$telemetryBuild = 'call "' + $vcvars + '" >nul && cl /nologo /std:c++17 /utf-8 /EHsc /O2 /W4 "' +
+    (Join-Path $here 'provider_telemetry_test.cpp') + '" /Fo"' + (Join-Path $here 'build\provider_telemetry_test.obj') +
+    '" /Fe"' + $telemetryExe + '"'
+& cmd.exe /d /c $telemetryBuild
+if ($LASTEXITCODE -ne 0) { throw 'Provider telemetry test compilation failed.' }
+& $telemetryExe
+if ($LASTEXITCODE -ne 0) { throw 'Provider telemetry tests failed.' }
 . (Join-Path $here 'StartupState.ps1')
 $research = Join-Path $fixture 'startup-fixture'
 $tuner = Join-Path $research 'vrss-tuner'

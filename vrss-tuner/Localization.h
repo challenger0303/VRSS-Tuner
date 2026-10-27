@@ -6,10 +6,19 @@
 namespace language {
 inline bool english = false;
 
-// Japanese is the source language. Replace longer phrases before their parts.
+// Japanese is the source language. Match the longest source phrase at each
+// position so shorter labels cannot split a longer status message.
 inline std::wstring Text(std::wstring value) {
     if (!english) return value;
     static const std::pair<const wchar_t*, const wchar_t*> replacements[] = {
+        {L"Pimax経路が現在動作中です。共通経路のプロファイルは適用できません。\n", L"The Pimax path is running. A common-path profile cannot be applied.\n"},
+        {L"共通プロバイダーが現在動作中です。Pimax経路のプロファイルは適用できません。\n", L"The common provider is running. A Pimax-path profile cannot be applied.\n"},
+        {L"共通経路へ切り替える場合は、先にVRChatとPimax側プロバイダーを通常終了してください。", L"To switch to the common path, close VRChat and the Pimax provider normally first."},
+        {L"先に共通プロバイダーを停止してください。", L"Stop the common provider first."},
+        {L"プロファイルは適用されましたが、次回起動用の選択を保存できませんでした。", L"The profile was applied, but its selection could not be saved for the next launch."},
+        {L"視線入力元の選択を次回起動用に保存できませんでした。", L"The gaze-source selection could not be saved for the next launch."},
+        {L"TunerのOSC転送は使用しません。", L"Tuner OSC forwarding is not used."},
+        {L"SteamVR視線アクション", L"SteamVR eye action"},
         {L"VRレイアウト4を使用。上下補正はFrame入力に内蔵しています。\r\n追加の補正は共通プロバイダーで調整できます。\r\n終了時に一時設定を復元します。ゲームは強制終了しません。",L"Use VR layout 4. Frame input includes vertical conversion.\r\nAdditional gains use Common provider calibration.\r\nTemporary settings are restored on exit. Games are never terminated."},
         {L"登録済み・視線取得中です。「VRChatを起動（Frame用）」から起動してください。受信側の接続と描画効果はまだ未確認です。",L"Registered with live gaze. Use Launch VRChat (Frame). Consumer connection and rendering are not yet verified."},
         {L"ゲーム起動を要求しましたが、Tuner内の環境変数復元に失敗しました。重複起動せずTunerを終了してください。",L"Game launch requested, but restoring launch-only environment failed. Exit Tuner; do not launch again."},
@@ -38,6 +47,28 @@ inline std::wstring Text(std::wstring value) {
         {L"再接続を準備しています。",L"Preparing to reconnect."},
         {L"起動準備に失敗: ",L"Connection preparation failed: "},
         {L"接続 / 再試行",L"Connect / Retry"},
+        {L"VIVE Pro Eye（SRanipal・実機未検証）", L"VIVE Pro Eye (SRanipal; hardware unverified)"},
+        {L"VIVE Streaming（実機未検証）", L"VIVE Streaming (hardware unverified)"},
+        {L"SteamVR視線アクション（実機未検証）", L"SteamVR eye action (hardware unverified)"},
+        {L"Varjo Native SDK（実機未検証）", L"Varjo Native SDK (hardware unverified)"},
+        {L"選択中: Varjo Native SDK → 共通プロバイダー（実機未検証）", L"Selected: Varjo Native SDK to common provider (hardware unverified)"},
+        {L"Varjo Native SDK → 両目視線ブリッジ → 共通プロバイダー（実機未確認）", L"Varjo Native SDK to binocular bridge to common provider (hardware unverified)"},
+        {L"Varjo視線ブリッジ起動中（実機未検証）", L"Varjo gaze bridge running (hardware unverified)"},
+        {L"Varjo視線ブリッジ停止中", L"Varjo gaze bridge stopped"},
+        {L"共通プロバイダー停止中。Start-Varjo.cmdを実行。", L"Common provider stopped. Run Start-Varjo.cmd."},
+        {L"選択中: SteamVR視線アクション → 共通プロバイダー（実機未検証）", L"Selected: SteamVR eye action to common provider (hardware unverified)"},
+        {L"SteamVR視線アクション → 左右投影 → 共通プロバイダー（実機未確認）", L"SteamVR eye action to stereo projection to common provider (hardware unverified)"},
+        {L"SteamVR視線ブリッジ起動中（実機未検証）", L"SteamVR eye bridge running (hardware unverified)"},
+        {L"SteamVR視線ブリッジ停止中", L"SteamVR eye bridge stopped"},
+        {L"共通プロバイダー停止中。Start-SteamVR-Eye.cmdを実行。", L"Common provider stopped. Run Start-SteamVR-Eye.cmd."},
+        {L"選択中: VIVE Pro Eye → 共通プロバイダー（実機未検証）", L"Selected: VIVE Pro Eye to common provider (hardware unverified)"},
+        {L"選択中: VIVE Streaming → 共通プロバイダー（実機未検証）", L"Selected: VIVE Streaming to common provider (hardware unverified)"},
+        {L"SRanipal → Pro Eyeブリッジ → 共通プロバイダー（実機未確認）", L"SRanipal to Pro Eye bridge to common provider (hardware unverified)"},
+        {L"VIVE Streaming SDK → ブリッジ → 共通プロバイダー（実機未確認）", L"VIVE Streaming SDK to bridge to common provider (hardware unverified)"},
+        {L"共通経路は同じ補正ファイルを使用。HMD別の設定はプロファイルで保存できます。", L"Common sources share one calibration file. Save headset-specific settings in profiles."},
+        {L"VIVE視線ブリッジ起動中（実機未検証）", L"VIVE gaze bridge running (hardware unverified)"},
+        {L"VIVE視線ブリッジ停止中", L"VIVE gaze bridge stopped"},
+        {L"共通プロバイダー停止中。VIVE起動スクリプトを実行。", L"Common provider stopped. Run the VIVE startup script."},
         {L"視線補正を反映", L"Apply calibration"},
         {L"この設定は、保存後にVRChatを再起動して反映します。\n起動中のVRChatには、その場で反映される保証がありません。\n\n今のワールドからは移動せず、自動再起動もしません。\n設定を保存しますか？", L"These settings take effect after VRChat restarts. Changes may not affect a running session.\n\nVRChat will not be restarted automatically. Save now?"},
         {L"視線は中央で固定。負荷は均等な場合の概算です。試算用MSAAはゲーム設定を変えません。", L"Preview assumes centered gaze and uniform cost. The MSAA estimate does not change game settings."},
@@ -57,6 +88,7 @@ inline std::wstring Text(std::wstring value) {
         {L"Pimax用の補正対応ドライバーを確認できません。補正は変更していません。", L"A compatible Pimax driver was not found. Calibration was not changed."},
         {L"共通プロバイダーを検出。UDP受信モードで起動してください。", L"Common provider detected. Start it in UDP receive mode."},
         {L"Pimax公式経路を優先中。共通経路への送信は停止します。", L"Pimax provider has priority. Sending to the common provider is paused."},
+        {L"Pimax経路を優先中。共通経路への送信は停止します。", L"Pimax provider has priority. Sending to the common provider is paused."},
         {L"共通プロバイダーが停止中。送信は行いません。", L"Common provider is stopped. No gaze data is sent."},
         {L"導入状態: NVIDIAのVRChatプロファイルを読み取れません。", L"Setup: Could not read the NVIDIA VRChat profile."},
         {L"導入状態: このVRChatプロファイルではVRSS許可が有効ではありません。", L"Setup: VRSS is not allowed by this VRChat profile."},
@@ -98,6 +130,7 @@ inline std::wstring Text(std::wstring value) {
         {L"両目", L"both eyes"}, {L"（保持）", L" (retained)"},
         {L"領域は1～100、縦横比は0.5～2の数値を指定してください。", L"Use area 1–100 and aspect ratio 0.5–2."},
         {L"倍率は0.1～2、左右の角度は-5～+5度で指定してください。", L"Use gain 0.1–2 and eye offsets -5° to +5°."},
+        {L"左右の角度は-5～+5度で指定してください。", L"Use an eye offset from -5° to +5°."},
         {L"設定は保存されましたが、次回起動用の記録を更新できませんでした。", L"Settings were saved, but the startup record could not be updated."},
         {L"補正は保存されましたが、次回起動用の記録を更新できませんでした。", L"Calibration was saved, but the startup record could not be updated."},
         {L"保存できませんでした。エラー番号: ", L"Could not save. Error: "},
@@ -107,12 +140,18 @@ inline std::wstring Text(std::wstring value) {
         {L"保存済みプロファイルを読み取れません。", L"Could not read the saved profile."},
         {L"視線補正を適用できませんでした。", L"Could not apply gaze calibration."},
         {L"プロファイルを適用しました。", L"Profile applied."},
+        {L"共通経路は使われていません。Pimax経路が動作中です。", L"The common path is inactive. The Pimax path is running."},
+        {L"入力元の選択だけでは実行中の経路は切り替わりません。", L"Selecting a source does not switch the running provider."},
+        {L"選択中の経路と稼働中の経路が異なります。稼働: ", L"Selected and running gaze routes differ. Running: "},
+        {L"共通経路のプロファイルは適用できません。", L"A common-path profile cannot be applied now."},
+        {L"Pimax経路のプロファイルは適用できません。", L"A Pimax-path profile cannot be applied now."},
+        {L"視線経路の競合", L"Gaze path conflict"},
         {L"Baballonia OSC: 受信中", L"Baballonia OSC: receiving"},
         {L"Baballonia OSC: 停止中", L"Baballonia OSC: stopped"},
         {L" / 共通経路へ送信 ", L" / sent to common provider "},
         {L"入力 ", L"Received "},
-        {L"プロファイルの切替", L"Switch profile"},
-        {L"切替完了", L"Switch complete"},
+        {L"プロファイルを適用", L"Apply profile"},
+        {L"適用完了", L"Apply complete"},
         {L"停止中", L"Stopped"},
         {L"完了", L"Done"},
         {L"一部だけ反映", L"Partially applied"},
@@ -134,6 +173,37 @@ inline std::wstring Text(std::wstring value) {
         {L"大きさ（1～100）", L"Size (1–100)"},
         {L"試算用 MSAA", L"Est. MSAA"},
         {L"補正する経路", L"Gaze path"},
+        {L"補正先（NVIDIAへの経路）", L"Calibration target (NVIDIA path)"},
+        {L"視線入力タブで選択中のソース", L"Selected gaze source"},
+        {L"選択中: Pimax経路（純正優先）", L"Selected: Pimax path (native priority)"},
+        {L"選択中: Baballonia OSC → 共通プロバイダー", L"Selected: Baballonia OSC → common provider"},
+        {L"選択中: PSVR2 Toolkit → 共通プロバイダー（実機未検証）", L"Selected: PSVR2 Toolkit → common provider (hardware unverified)"},
+        {L"選択中: PSVR2 SRanibro → 共通プロバイダー（実機未検証）", L"Selected: PSVR2 SRanibro → common provider (hardware unverified)"},
+        {L"選択中: SRanibro → 共通プロバイダー（HMD別に要検証）", L"Selected: SRanibro → common provider (validate per headset)"},
+        {L"選択中: PSVR2Toolkit → Baballonia → 共通プロバイダー（未検証）", L"Selected: PSVR2Toolkit → Baballonia → common provider (unverified)"},
+        {L"Pimax経路の補正値を編集します。", L"Editing calibration for the Pimax path."},
+        {L"BaballoniaとPSVR2は共通の補正ファイルを使用。別設定はプロファイルで保存できます。", L"Baballonia and PSVR2 share the common calibration file. Save separate values in profiles."},
+        {L"純正XR5視線を優先。SRanibro使用時はPimaxブリッジへ切替。TunerのOSC転送は不要です。", L"Native XR5 gaze has priority; the Pimax bridge is used when SRanibro takes over. No Tuner OSC relay is needed."},
+        {L"Baballonia → Tuner → 共通プロバイダー", L"Baballonia → Tuner → common provider"},
+        {L"PSVR2 Toolkit → 直接ブリッジ → 共通プロバイダー（実機未確認）", L"PSVR2 Toolkit → direct bridge → common provider (hardware unverified)"},
+        {L"PSVR2 SRanibro → 共通プロバイダー（実機未確認）", L"PSVR2 SRanibro → common provider (hardware unverified)"},
+        {L"SRanibro → 共通プロバイダー（接続中HMDの投影情報を使用）", L"SRanibro → common provider (using connected HMD geometry)"},
+        {L"PSVR2Toolkit → Baballonia → Tuner → 共通プロバイダー（実機未確認）", L"PSVR2Toolkit → Baballonia → Tuner → common provider (unverified)"},
+        {L"Pimax経路: NVIDIAプロバイダー起動中", L"Pimax path: NVIDIA provider running"},
+        {L"Pimax経路: NVIDIAプロバイダー停止中", L"Pimax path: NVIDIA provider stopped"},
+        {L"入力候補: Pimax純正XR5ランタイム（視線値は未計測）", L"Input candidate: native Pimax XR5 runtime (gaze not measured)"},
+        {L"入力候補: SRanibro → Pimaxブリッジ（視線値は未計測）", L"Input candidate: SRanibro to Pimax bridge (gaze not measured)"},
+        {L"SRanibro起動中・Pimaxブリッジ未検出", L"SRanibro running; Pimax bridge not found"},
+        {L"純正視線サービスは無効です。復帰が必要です。", L"Native gaze service is disabled; restore it."},
+        {L"純正サービス起動中。視線が戻らなければPimaxサービスを再起動してください。", L"Native service is running. If gaze does not return, restart the Pimax service."},
+        {L"Pimax視線入力を待っています。", L"Waiting for Pimax gaze input."},
+        {L"純正サービスを復帰", L"Restore native service"},
+        {L"純正サービスを起動しました。視線が戻らない場合は、Pimaxアプリの「サービスを再起動」を実行してください。", L"Native service started. If gaze does not return, use Restart service in the Pimax app."},
+        {L"Pimax視線サービスを復帰できませんでした。", L"Could not restore the Pimax gaze service."},
+        {L"Windowsの管理者確認が取り消されました。", L"Windows administrator confirmation was canceled."},
+        {L"Pimax視線", L"Pimax gaze"},
+        {L"TunerのOSC受信・転送は使用しません。", L"Tuner OSC reception and relay are not used."},
+        {L"補正値は視線補正タブで変更できます。", L"Change calibration in the Gaze calibration tab."},
         {L"横方向の倍率", L"Horizontal gain"},
         {L"縦方向の倍率", L"Vertical gain"},
         {L"上下方向を反転", L"Flip vertical"},
@@ -142,31 +212,79 @@ inline std::wstring Text(std::wstring value) {
         {L"視線補正を反映", L"Apply calibration"},
         {L"視線の入力元", L"Gaze source"},
         {L"Baballonia OSC（左目・右目の視線）", L"Baballonia OSC (left and right eye)"},
+        {L"Baballonia OSC（PSVR2Toolkitも入力候補）", L"Baballonia OSC (PSVR2Toolkit is a candidate)"},
+        {L"PSVR2: Toolkit → Baballonia → Tuner → 共通プロバイダー（実機未確認）", L"PSVR2: Toolkit → Baballonia → Tuner → common provider (unverified)"},
+        {L"PSVR2Toolkit → Baballonia（未検証）", L"PSVR2Toolkit → Baballonia (unverified)"},
+        {L"PSVR2 Toolkit（直接）", L"PSVR2 Toolkit (direct)"},
+        {L"PSVR2 SRanibro", L"PSVR2 SRanibro"},
+        {L"SRanibro（共通）", L"SRanibro (common)"},
+        {L"PSVR2 Toolkit CAPIブリッジ起動中", L"PSVR2 Toolkit CAPI bridge running"},
+        {L"PSVR2 Toolkit CAPIブリッジ停止中", L"PSVR2 Toolkit CAPI bridge stopped"},
+        {L"PSVR2 SRanibro起動中", L"PSVR2 SRanibro running"},
+        {L"PSVR2 SRanibro停止中", L"PSVR2 SRanibro stopped"},
+        {L"SRanibro起動中", L"SRanibro running"},
+        {L"SRanibro停止中", L"SRanibro stopped"},
+        {L"共通プロバイダー起動中。視線の受理は下の状態で確認。", L"Common provider running. Check accepted gaze below."},
+        {L"共通プロバイダー停止中。対応する起動スクリプトを実行してください。", L"Common provider stopped. Run the matching launch script."},
+        {L"共通プロバイダー停止中。Start-PSVR2-Toolkit.cmdを実行。", L"Common provider stopped. Run Start-PSVR2-Toolkit.cmd."},
+        {L"共通プロバイダー停止中。Start-SRanibro.cmdを実行。", L"Common provider stopped. Run Start-SRanibro.cmd."},
+        {L"Pimax公式プロバイダーが優先されています。", L"The Pimax official provider has priority."},
         {L"受信ポート", L"Receive port"},
         {L"OSC転送先（0=なし）", L"Forward OSC (0=off)"},
         {L"VRCFaceTrackingへ転送する場合は8888", L"Use 8888 for VRCFaceTracking"},
         {L"配信を開始", L"Start relay"},
+        {L"表示倍率", L"Display zoom"},
+        {L"共通経路を起動", L"Start common path"},
+        {L"共通経路＋VRChatを起動", L"Start common path + VRChat"},
+        {L"視線経路だけ起動", L"Start gaze path only"},
+        {L"視線経路を起動", L"Start gaze path"},
+        {L"起動スクリプトを開けませんでした。", L"Could not open the launch script."},
         {L"停止", L"Stop"},
+        {L"選択した経路に切替", L"Switch to selected source"},
+        {L"視線経路をすべて停止しています。", L"Stopping all gaze paths."},
+        {L"選択した視線経路へ切り替えています。", L"Switching to the selected gaze source."},
+        {L"視線経路の操作を完了できませんでした。", L"The gaze path operation did not complete."},
+        {L"Baballonia OSC: バックグラウンドで受信中", L"Baballonia OSC: background listener running"},
+        {L"OSCパケット ", L"OSC packets "},
+        {L" / 視線値 ", L" / gaze values "},
+        {L"未受信: Baballoniaの送信先を127.0.0.1と下記の受信ポートに設定してください。", L"No packets: set Baballonia output to 127.0.0.1 and the receive port below."},
+        {L"パケットは受信済みですが、対応する視線値がありません。Eye出力を確認してください。", L"Packets arrived, but contain no supported gaze values. Check Eye output."},
+        {L"新しい左右4軸の視線値を待っています。", L"Waiting for fresh X/Y values from both eyes."},
+        {L"Baballonia → Tuner受信ポート → VRCFaceTracking転送先。カメラの再接続は不要です。", L"Baballonia → Tuner receive port → VRCFaceTracking forward port. No camera reconnection is needed."},
+        {L"Pimax視線プロバイダーを検出。選択した経路へ切り替えると送信だけを停止します。", L"Pimax gaze sender detected. Switching source stops only its VRSS sender."},
         {L"Pimax経路", L"Pimax path"},
+        {L"Pimax経路（純正優先）", L"Pimax path (native priority)"},
         {L"共通プロバイダー", L"Common provider"},
         {L"VRSSモード", L"VRSS mode"},
         {L"画質", L"Graphics"},
         {L"保存", L"Save"},
-        {L"切替", L"Switch"},
+        {L"適用", L"Apply"},
         {L"オフ", L"Off"}, {L"オン", L"On"},
         {L"左目", L"Left eye"}, {L"右目", L"Right eye"},
         {L"度（-5～+5）", L"degrees (-5 to +5)"},
+        {L"0.1度刻み（-5～+5）", L"0.1° steps (-5 to +5)"},
         {L"0.1～2", L"0.1–2"}, {L"0.5～2", L"0.5–2"},
         {L"VRSS Tuner / 読取専用", L"VRSS Tuner / read only"},
     };
-    for (const auto& [from, to] : replacements) {
-        size_t pos = 0;
-        const std::wstring needle(from);
-        while ((pos = value.find(needle, pos)) != std::wstring::npos) {
-            value.replace(pos, needle.size(), to);
-            pos += std::wcslen(to);
+    std::wstring translated;
+    translated.reserve(value.size());
+    for (size_t pos = 0; pos < value.size();) {
+        const wchar_t* best = nullptr;
+        size_t bestLength = 0;
+        for (const auto& [from, to] : replacements) {
+            const size_t length = std::wcslen(from);
+            if (length > bestLength && value.compare(pos, length, from) == 0) {
+                best = to;
+                bestLength = length;
+            }
+        }
+        if (best) {
+            translated += best;
+            pos += bestLength;
+        } else {
+            translated += value[pos++];
         }
     }
-    return value;
+    return translated;
 }
 }

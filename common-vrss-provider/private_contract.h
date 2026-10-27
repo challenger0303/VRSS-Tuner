@@ -20,7 +20,8 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "nvapi64.lib")
 
-// Private calls require an exact audited image pair and method table.
+// Private calls require an exact built-in or explicitly opted-in image pair
+// and a matching method table. An experimental match is not an ABI guarantee.
 // EDID-free Frame sessions are additionally restricted to the verified 596.02 path.
 struct Challenge { uint32_t version = 0x10014; uint8_t bytes[16]{}; };
 struct Registration {

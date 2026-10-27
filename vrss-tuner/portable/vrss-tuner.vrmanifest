@@ -1,0 +1,13 @@
+{
+  "source": "builtin",
+  "applications": [{
+    "app_key": "vrss.tuner.autostart",
+    "launch_type": "binary",
+    "binary_path_windows": "steamvr_autostart.exe",
+    "is_dashboard_overlay": true,
+    "strings": {
+      "en_us": {"name": "VRSS Tuner startup", "description": "Starts VRSS Tuner and the selected gaze path with SteamVR."},
+      "ja_jp": {"name": "VRSS Tuner 自動起動", "description": "SteamVRと同時にVRSS Tunerと選択した視線経路を起動します。"}
+    }
+  }]
+}

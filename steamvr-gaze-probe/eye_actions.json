@@ -1,0 +1,9 @@
+{
+  "action_sets": [
+    { "name": "/actions/vrss_probe", "usage": "single" }
+  ],
+  "actions": [
+    { "name": "/actions/vrss_probe/in/gaze", "type": "eyetracking", "requirement": "optional" }
+  ],
+  "default_bindings": []
+}

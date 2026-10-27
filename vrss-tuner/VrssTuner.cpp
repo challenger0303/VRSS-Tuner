@@ -1,4 +1,4 @@
-#define WIN32_LEAN_AND_MEAN
+﻿#define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <winsock2.h>
 #include <windows.h>
@@ -6,7 +6,9 @@
 #include <commctrl.h>
 #include <tlhelp32.h>
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -27,11 +29,15 @@
 #include "FrameTestGate.h"
 #include "../common-vrss-provider/ProviderEntry.h"
 #include "Localization.h"
+#include "ProviderTelemetry.h"
+#include "PimaxGazeMonitor.h"
+#include "NvidiaQueueMonitor.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "advapi32.lib")
 #pragma comment(lib, "nvapi64.lib")
 #pragma comment(lib, "ws2_32.lib")
 
@@ -347,10 +353,24 @@ void initializeGazePaths() {
             }
         }
     }
-    gGazeStore.pimax = L"C:\\ProgramData\\CodexVRSS\\gaze-calibration.txt";
-    gGazeStore.common = gResearch / L"common-vrss-provider" / L"calibration.txt";
     auto backup = backupFolder();
-    if (!backup.empty()) gGazeStore.backups = backup / L"gaze-backups";
+    gGazeStore.pimax = L"C:\\ProgramData\\CodexVRSS\\gaze-calibration.txt";
+    if (!backup.empty()) {
+        gGazeStore.common = backup / L"common-calibration.txt";
+        gGazeStore.backups = backup / L"gaze-backups";
+        if (GetFileAttributesW(gGazeStore.common.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            std::string initial;
+            const auto bundled = gResearch / L"common-vrss-provider" / L"calibration.txt";
+            GazeCalibration::Values values{};
+            if (live::ReadBytes(bundled, initial) && GazeCalibration::Parse(initial, values) &&
+                live::Valid(values)) {
+                std::error_code error;
+                std::filesystem::create_directories(backup, error);
+                DWORD winError{};
+                if (!error) live::AtomicWrite(gGazeStore.common, initial, winError);
+            }
+        }
+    }
 }
 bool compatiblePimaxDriver() {
     std::string manifest, dll;
@@ -425,18 +445,19 @@ int gazeCommand(int argc, wchar_t** argv, bool restore) {
 enum ControlId {
     kRefreshButton = 100, kApplyButton, kRestoreButton,
     kModeCombo, kAreaEdit, kAspectCheck, kAspectEdit, kLayoutCombo, kInvertCheck, kStatusEdit,
-    kDriverTab, kGazeTab, kGazeTarget, kGazeX, kGazeY, kGazeLeft, kGazeRight, kGazeInvert,
+    kDriverTab, kGazeTab, kGazeSource, kGazeX, kGazeY, kGazeLeft, kGazeRight,
+    kGazeLeftMinus, kGazeLeftPlus, kGazeRightMinus, kGazeRightPlus, kGazeInvert,
     kGazeRefresh, kGazeApply, kGazeRestore, kGazeReset,
     kAreaSlider, kEstimateMsaa, kProfileName, kProfileSave, kProfileSwitch,
-    kInputTab, kInputPort, kInputForward, kInputStart, kInputStop, kInputStatus,
+    kInputTab, kInputPort, kInputForward, kInputStart, kInputStop, kInputStatus, kPreviewZoom,
     kLanguage, kFrameTab, kFrameStart, kFrameStop, kFrameLaunch
 };
 struct Ui {
     HWND window{}, mode{}, area{}, aspectCheck{}, aspect{}, layout{}, invert{}, status{}, restore{};
     ProfileValues loaded{};
     bool loadedOk{};
-    HWND driverTab{}, gazeTab{}, gazeTarget{}, gazeX{}, gazeY{}, gazeLeft{}, gazeRight{}, gazeInvert{}, gazeStatus{}, gazeApply{}, gazeRestore{};
-    HWND profileName{}, profileSave{}, profileSwitch{}, inputTab{}, inputPort{}, inputForward{}, inputStart{}, inputStop{}, inputStatus{}, language{};
+    HWND driverTab{}, gazeTab{}, gazeSourceLabel{}, gazePathNote{}, gazeX{}, gazeY{}, gazeLeft{}, gazeRight{}, gazeInvert{}, gazeStatus{}, gazeApply{}, gazeRestore{};
+    HWND profileName{}, profileSave{}, profileSwitch{}, inputTab{}, gazeSource{}, sourceNote{}, inputPort{}, inputForward{}, inputStart{}, inputStop{}, inputStatus{}, liveMonitor{}, previewZoom{}, language{};
     live::Target target{live::Target::Pimax};
     live::Snapshot gazeLoaded{};
     bool gazeLoadedOk{};
@@ -448,6 +469,40 @@ struct Ui {
 };
 Ui gUi;
 frame::Runtime gFrameRuntime;
+std::atomic<int> gSelectedSource{0}; // 0=Pimax, 1=Baballonia, 2=PSVR2, 3=SRanibro, 4=VIVE Pro Eye, 5=VIVE Streaming, 6=SteamVR eye action, 7=Varjo
+struct LiveMonitor {
+    int source{}, selectedSource{};
+    bool vendor{}, common{}, routeVerified{}, inputRunning{}, relayFresh{}, relaySent{}, providerReady{}, consumerReady{}, accepted{}, failure{};
+    telemetry::Snapshot provider{};
+    uint64_t lastReceived{}, lastRelaySent{}, lastAccepted{}, lastFailures{};
+    uint64_t receivedAt{}, relaySentAt{}, acceptedAt{}, failureAt{};
+    uint64_t lastProviderSequence{}, providerSequenceAt{};
+    uint32_t providerPid{};
+    uint64_t receivedPerSecond{}, relayPerSecond{}, acceptedPerSecond{};
+};
+LiveMonitor gLive;
+HANDLE gRouteOperation{};
+bool gRouteStopping{};
+const wchar_t* gazeSourceName(int source, bool english) {
+    switch(source) {
+    case 0: return english ? L"Pimax" : L"Pimax";
+    case 1: return english ? L"Baballonia" : L"Baballonia";
+    case 2: return english ? L"PSVR2 Toolkit" : L"PSVR2 Toolkit";
+    case 3: return english ? L"SRanibro" : L"SRanibro";
+    case 4: return english ? L"VIVE Pro Eye" : L"VIVE Pro Eye";
+    case 5: return english ? L"VIVE Streaming" : L"VIVE Streaming";
+    case 6: return english ? L"SteamVR eye action" : L"SteamVR視線アクション";
+    case 7: return english ? L"Varjo Native SDK" : L"Varjo Native SDK";
+    default: return english ? L"unknown" : L"不明";
+    }
+}
+int gPreviewZoom=3; // Visualization only. Never change submitted gaze or calibration.
+PimaxGazeMonitor gPimaxGaze;
+std::array<float, 4> gPimaxLocation{};
+uint64_t gPimaxFreshAt{};
+NvidiaQueueMonitor gNvidiaQueue;
+std::array<float, 4> gNvidiaLocation{};
+uint64_t gNvidiaFreshAt{};
 HFONT gFont{};
 HFONT gBoldFont{};
 bool gBusy{};
@@ -479,6 +534,19 @@ int localizedMessageBox(HWND owner, const wchar_t* message, const wchar_t* title
     const auto caption = language::Text(title ? title : L"");
     return ::MessageBoxW(owner, body.c_str(), caption.c_str(), flags);
 }
+std::wstring frameLaunchError(const std::string& error) {
+    if (language::english) return {error.begin(), error.end()};
+    if (error == "Close VRChat and Unity before launching")
+        return L"起動前にVRChatとUnityを終了してください。";
+    if (error == "The current Frame session is not ready for a game launch")
+        return L"Steam Frameの接続準備が完了していません。視線の状態を確認してください。";
+    if (error == "Start the Tuner UI without administrator privileges before launching VRChat")
+        return L"Tunerを管理者権限なしで起動し直してから、VRChatを起動してください。";
+    if (error == "The installed VRChat EAC launcher could not be verified" ||
+        error == "Steam App 438100 installation is not registered in Windows")
+        return L"VRChatのインストール先を確認できません。SteamでVRChatの導入状態を確認してください。";
+    return L"VRChatを起動できませんでした。Steam Frameの接続状態と実行ログを確認してください。";
+}
 #define MessageBoxW localizedMessageBox
 std::wstring getText(HWND target) {
     wchar_t buffer[4096]{};
@@ -499,8 +567,14 @@ void applyLanguage() {
         SendMessageW(combo, CB_SETCURSEL, selection, 0);
     };
     repopulate(gUi.mode, L"オフ", L"オン");
-    repopulate(gUi.gazeTarget, L"Pimax経路", L"共通プロバイダー");
-    for (HWND handle : {gUi.status, gUi.gazeStatus, gUi.inputStatus, gUi.frameStatus,
+    int source = int(SendMessageW(gUi.gazeSource, CB_GETCURSEL, 0, 0));
+    SendMessageW(gUi.gazeSource, CB_RESETCONTENT, 0, 0);
+    for (const wchar_t* name : {L"Pimax経路（純正優先）", L"Baballonia OSC", L"PSVR2 Toolkit（直接）", L"SRanibro（共通）", L"VIVE Pro Eye（SRanipal・実機未検証）", L"VIVE Streaming（実機未検証）", L"SteamVR視線アクション（実機未検証）", L"Varjo Native SDK（実機未検証）"}) {
+        const auto translated=language::Text(name);
+        SendMessageW(gUi.gazeSource,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(translated.c_str()));
+    }
+    SendMessageW(gUi.gazeSource,CB_SETCURSEL,source,0);
+    for (HWND handle : {gUi.status, gUi.gazeStatus, gUi.inputStatus,gUi.inputStart,gUi.frameStatus,gUi.gazeSourceLabel,gUi.gazePathNote,gUi.sourceNote,
                         gUi.regionArea, gUi.regionCost, gUi.regionNote, gUi.installInfo}) {
         auto found = gOriginalText.find(handle);
         if (found != gOriginalText.end()) {
@@ -509,6 +583,7 @@ void applyLanguage() {
         }
     }
     InvalidateRect(gUi.regionPreview, nullptr, TRUE);
+    InvalidateRect(gUi.liveMonitor, nullptr, TRUE);
 }
 bool isChecked(HWND target) { return SendMessageW(target, BM_GETCHECK, 0, 0) == BST_CHECKED; }
 void check(HWND target, bool on) { SendMessageW(target, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0); }
@@ -586,6 +661,140 @@ LRESULT CALLBACK regionPreviewProc(HWND window,UINT message,WPARAM wParam,LPARAM
     }
     return DefWindowProcW(window,message,wParam,lParam);
 }
+LRESULT CALLBACK liveMonitorProc(HWND window,UINT message,WPARAM wParam,LPARAM lParam) {
+    if (message == WM_ERASEBKGND) return 1;
+    if (message != WM_PAINT) return DefWindowProcW(window,message,wParam,lParam);
+    PAINTSTRUCT paint{}; HDC dc=BeginPaint(window,&paint); RECT client{}; GetClientRect(window,&client);
+    HDC buffer=CreateCompatibleDC(dc); HBITMAP bitmap=CreateCompatibleBitmap(dc,client.right,client.bottom);
+    auto oldBitmap=SelectObject(buffer,bitmap);
+    FillRect(buffer,&client,static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+    FrameRect(buffer,&client,static_cast<HBRUSH>(GetStockObject(LTGRAY_BRUSH)));
+    SetBkMode(buffer,TRANSPARENT); auto oldFont=SelectObject(buffer,gFont);
+    auto put=[&](int x,int y,const std::wstring& value,COLORREF color=RGB(48,61,76)) {
+        SetTextColor(buffer,color); TextOutW(buffer,x,y,value.c_str(),int(value.size()));
+    };
+    const bool en=language::english;
+    put(12,8,en?L"Live gaze path":L"視線経路の動作状況");
+    const bool activeRoute=gLive.vendor || gLive.routeVerified;
+    std::wstring routeLabel=(activeRoute?(en?L"Running: ":L"稼働: "):(en?L"Selected: ":L"選択: "))+
+        std::wstring(gazeSourceName(gLive.source,en));
+    if (activeRoute && gLive.source!=gLive.selectedSource)
+        routeLabel+=(en?L" (selected: ":L"（選択: ")+std::wstring(gazeSourceName(gLive.selectedSource,en))+
+            (en?L")":L"）");
+    put(220,8,routeLabel,activeRoute && gLive.source!=gLive.selectedSource?RGB(151,93,15):RGB(84,97,112));
+    auto stage=[&](int y,bool active,bool warning,const std::wstring& label,const std::wstring& detail) {
+        HBRUSH dot=CreateSolidBrush(active?RGB(34,157,88):warning?RGB(225,154,34):RGB(156,164,176));
+        HBRUSH old=static_cast<HBRUSH>(SelectObject(buffer,dot));
+        Ellipse(buffer,14,y+3,26,y+15); SelectObject(buffer,old); DeleteObject(dot);
+        put(34,y,label); put(200,y,detail,active?RGB(28,114,68):warning?RGB(151,93,15):RGB(104,115,128));
+    };
+    const uint64_t tick = GetTickCount64();
+    const bool pimaxFresh = gLive.vendor && gPimaxFreshAt && tick >= gPimaxFreshAt && tick-gPimaxFreshAt < 1500;
+    const bool queueFresh = gLive.vendor && gNvidiaFreshAt && tick >= gNvidiaFreshAt && tick-gNvidiaFreshAt < 1500;
+    const bool commonDotsFresh = gLive.providerReady && gLive.provider.fresh &&
+        gLive.providerSequenceAt && tick >= gLive.providerSequenceAt && tick-gLive.providerSequenceAt < 1500 &&
+        (gLive.source==1?gLive.relaySent:gLive.relayFresh);
+    const std::wstring inputDetail=gLive.source==0?(pimaxFresh?
+        (en?L"Pimax gaze moving":L"Pimax視線を受信中"):
+        (en?L"Pimax gaze waiting":L"Pimax視線待ち")):
+        gLive.source==1?(gLive.relayFresh?
+            (en?L"OSC receiving ":L"OSC受信中 ")+std::to_wstring(gLive.receivedPerSecond)+(en?L" /s":L" 件/秒"):
+            gLive.inputRunning?(en?L"listener running; waiting for OSC":L"受信待機中・OSC待ち"):
+                               (en?L"OSC listener stopped":L"OSC受信停止中")):
+        gLive.inputRunning?(en?L"source app / bridge running":L"視線アプリ・ブリッジ起動中"):
+                           (en?L"source app / bridge stopped":L"視線アプリ・ブリッジ停止中");
+    stage(30,gLive.source==0?pimaxFresh:gLive.source==1?gLive.relayFresh:gLive.inputRunning,
+        gLive.source==0?gLive.vendor&&!pimaxFresh:gLive.source==1?gLive.inputRunning&&!gLive.relayFresh:
+        gLive.common&&!gLive.inputRunning,en?L"1  Eye source":L"1  視線入力元",inputDetail);
+    stage(53,gLive.source==0?queueFresh:gLive.relaySent,
+        gLive.source==0?gLive.vendor&&!queueFresh:gLive.source==1?gLive.relayFresh&&!gLive.relaySent:
+        gLive.inputRunning&&!gLive.relaySent,
+        (en?L"2  Gaze handoff":L"2  視線の受け渡し"),
+        gLive.source==0?(queueFresh?(en?L"NVIDIA queue updating":L"NVIDIAへの視線が更新中"):
+            (en?L"waiting for NVIDIA gaze":L"NVIDIAへの視線待ち")):
+        gLive.relaySent?(gLive.source>=1?(en?L"fresh gaze reached provider":L"新しい視線がプロバイダーへ到達"):
+            (en?L"sent ":L"送信中 ")+std::to_wstring(gLive.relayPerSecond)+(en?L" /s":L" 件/秒")):
+        gLive.vendor?(en?L"Pimax provider has priority":L"Pimax経路を優先中"):
+        !gLive.common?(en?L"waiting for common provider":L"共通プロバイダー待ち"):
+                      (en?L"waiting for fresh gaze":L"新しい視線データ待ち"));
+    if (gLive.source==0 || gLive.vendor) {
+        stage(76,gLive.vendor&&gNvidiaQueue.Present(),gLive.vendor&&!gNvidiaQueue.Present(),en?L"3  Provider":L"3  プロバイダー",gLive.vendor?
+            (gNvidiaQueue.Present()?(en?L"Pimax registered":L"Pimax経路を検出"):
+                (en?L"Pimax running; gaze unverified":L"Pimax起動中・視線未確認")):
+            (en?L"Pimax path stopped":L"Pimax経路は停止中"));
+        stage(99,queueFresh,gLive.vendor&&gNvidiaQueue.Present()&&!queueFresh,en?L"4  NVIDIA gaze":L"4  NVIDIA視線",gLive.vendor?
+            (queueFresh?(en?L"valid stereo packets updating":L"有効な両目視線が更新中"):
+                (en?L"waiting for valid packets":L"有効な視線データ待ち")):
+            (en?L"waiting for provider":L"プロバイダー待ち"));
+    } else {
+        stage(76,gLive.providerReady,gLive.common,en?L"3  Provider":L"3  プロバイダー",
+            gLive.providerReady?(en?L"registered":L"登録済み"):
+            gLive.common?(en?L"running; registration unconfirmed":L"起動中・登録未確認"):
+                         (en?L"stopped":L"停止中"));
+        std::wstring detail=gLive.accepted?
+            (en?L"gaze accepted ":L"視線受理 ")+std::to_wstring(gLive.acceptedPerSecond)+(en?L" /s":L" 件/秒"):
+            gLive.failure?(en?L"submission/query error":L"送信・照会エラー"):
+            !gLive.providerReady?(en?L"waiting for provider":L"プロバイダー待ち"):
+            !gLive.consumerReady?(en?L"waiting for VR consumer":L"VRアプリの照会待ち"):
+                                 (en?L"waiting for fresh gaze":L"新しい視線データ待ち");
+        stage(99,gLive.accepted,gLive.failure||gLive.providerReady,en?L"4  NVIDIA gaze":L"4  NVIDIA視線",detail);
+    }
+    put(12,126,gLive.source==0?
+        (queueFresh?(en?L"NVIDIA gaze position (left / right eye)":L"NVIDIAへ届いた視線（左目／右目）"):
+            (en?L"Pimax input gaze (left / right eye)":L"Pimax入力視線（左目／右目）")):
+        gLive.accepted?(en?L"NVIDIA-accepted gaze (left / right)":L"NVIDIAが受理した視線（左目／右目）"):
+        commonDotsFresh?(en?L"Provider input gaze (left / right)":L"プロバイダー入力視線（左目／右目）"):
+        (en?L"Waiting for provider gaze (left / right)":L"プロバイダーの視線待ち（左目／右目）"),RGB(84,97,112));
+    for (int eye=0;eye<2;++eye) {
+        const int x=12+eye*165, y=148, width=145, height=103;
+        RECT square{x,y,x+width,y+height}; HBRUSH pale=CreateSolidBrush(RGB(243,246,250));
+        FillRect(buffer,&square,pale); DeleteObject(pale);
+        FrameRect(buffer,&square,static_cast<HBRUSH>(GetStockObject(LTGRAY_BRUSH)));
+        HPEN cross=CreatePen(PS_SOLID,1,RGB(205,212,220)); auto oldPen=SelectObject(buffer,cross);
+        MoveToEx(buffer,x+width/2,y,nullptr);LineTo(buffer,x+width/2,y+height);
+        MoveToEx(buffer,x,y+height/2,nullptr);LineTo(buffer,x+width,y+height/2);
+        SelectObject(buffer,oldPen);DeleteObject(cross);
+        if ((gLive.source==0 && (queueFresh||pimaxFresh)) || (gLive.source!=0 && commonDotsFresh)) {
+            const float gx=gLive.source==0?(queueFresh?gNvidiaLocation[eye*2]:gPimaxLocation[eye*2]):gLive.provider.locations[eye*2];
+            const float gy=gLive.source==0?(queueFresh?gNvidiaLocation[eye*2+1]:gPimaxLocation[eye*2+1]):gLive.provider.locations[eye*2+1];
+            const float screenY=gLive.source==0?gy:-gy;
+            auto point=[&](float px,float py) {
+                return POINT{x+width/2+int(std::lround(std::clamp(px,-1.0f,1.0f)*(width/2-7))),
+                             y+height/2+int(std::lround(std::clamp(py,-1.0f,1.0f)*(height/2-7)))};
+            };
+            const POINT actual=point(gx,screenY);
+            const POINT enlarged=point(gx*gPreviewZoom,screenY*gPreviewZoom);
+            HPEN ring=CreatePen(PS_SOLID,2,RGB(59,105,164));
+            auto priorPen=SelectObject(buffer,ring);
+            auto priorBrush=SelectObject(buffer,GetStockObject(NULL_BRUSH));
+            Ellipse(buffer,actual.x-5,actual.y-5,actual.x+6,actual.y+6);
+            SelectObject(buffer,priorPen);SelectObject(buffer,priorBrush);DeleteObject(ring);
+            HBRUSH dot=CreateSolidBrush(RGB(34,157,88));auto old=SelectObject(buffer,dot);
+            Ellipse(buffer,enlarged.x-4,enlarged.y-4,enlarged.x+5,enlarged.y+5);
+            SelectObject(buffer,old);DeleteObject(dot);
+        }
+        put(x+6,y+5,eye==0?(en?L"L":L"左"):(en?L"R":L"右"));
+    }
+    RECT note{350,151,client.right-10,client.bottom-8};
+    const wchar_t* noteText=gLive.source==0?
+        (queueFresh?(en?L"Dots use NVIDIA's final coordinates. Calibration is already included. The VRSS image must be checked in the headset.":
+            L"点はNVIDIAへ届いた最終座標です。補正値は反映済み。VRSSの領域はHMD内で確認してください。"):
+            (en?L"Dots show Pimax input; NVIDIA reception is not yet confirmed.":
+                L"点はPimax入力です。NVIDIA側への到達は未確認です。")):
+        (gLive.accepted?(en?L"NVIDIA accepted this gaze. The VRSS image still needs an in-headset check.":
+            L"この視線はNVIDIAが受理しました。VRSSの描画はHMD内で確認してください。"):
+        commonDotsFresh?(en?L"Source gaze is updating; NVIDIA acceptance is not yet confirmed.":
+            L"入力視線は更新中。NVIDIA側の受理はまだ確認できません。"):
+        (en?L"Waiting for live gaze samples. Dots do not represent the VRSS area.":
+            L"新しい視線データ待ち。点はVRSS領域を表しません。"));
+    const std::wstring legend=(en?L"Green: observed / amber: check / gray: waiting.\nBlue ring: actual gaze. Green dot: display zoom x":
+        L"緑：確認済み／橙：要確認／灰：待機。\n青い輪：実際の視線。緑の点：表示だけ")+
+        std::to_wstring(gPreviewZoom)+(en?L". VRSS is unchanged.\n":L"倍。VRSSは変更しません。\n");
+    const std::wstring explanation=legend+noteText;
+    SetTextColor(buffer,RGB(85,97,111));DrawTextW(buffer,explanation.c_str(),-1,&note,DT_WORDBREAK);
+    SelectObject(buffer,oldFont);BitBlt(dc,0,0,client.right,client.bottom,buffer,0,0,SRCCOPY);
+    SelectObject(buffer,oldBitmap);DeleteObject(bitmap);DeleteDC(buffer);EndPaint(window,&paint);return 0;
+}
 bool vrchatRunning() {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) return false;
@@ -604,6 +813,53 @@ unsigned processCount(const wchar_t* name) {
     if (Process32FirstW(snapshot, &entry)) do { if (_wcsicmp(entry.szExeFile, name) == 0) ++count; } while (Process32NextW(snapshot, &entry));
     CloseHandle(snapshot); return count;
 }
+struct PimaxServiceState { bool found{}, running{}, disabled{}; };
+constexpr wchar_t kPimaxEyeService[] = L"Tobii VR4PIMAXP3B Platform Runtime";
+PimaxServiceState pimaxServiceState() {
+    PimaxServiceState result{};
+    SC_HANDLE manager=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT);
+    if (!manager) return result;
+    SC_HANDLE service=OpenServiceW(manager,kPimaxEyeService,SERVICE_QUERY_STATUS|SERVICE_QUERY_CONFIG);
+    if (service) {
+        result.found=true;
+        SERVICE_STATUS status{};
+        if (QueryServiceStatus(service,&status)) result.running=status.dwCurrentState==SERVICE_RUNNING;
+        std::array<BYTE,8192> storage{}; DWORD needed{};
+        if (QueryServiceConfigW(service,reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(storage.data()),
+                DWORD(storage.size()),&needed))
+            result.disabled=reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(storage.data())->dwStartType==SERVICE_DISABLED;
+        CloseServiceHandle(service);
+    }
+    CloseServiceHandle(manager);
+    return result;
+}
+int restorePimaxService() {
+    if (processCount(L"SRanibro.exe")) return 81; // Never take the EyeChip from active custom capture.
+    SC_HANDLE manager=OpenSCManagerW(nullptr,nullptr,SC_MANAGER_CONNECT);
+    if (!manager) return 82;
+    SC_HANDLE service=OpenServiceW(manager,kPimaxEyeService,
+        SERVICE_QUERY_STATUS|SERVICE_QUERY_CONFIG|SERVICE_CHANGE_CONFIG|SERVICE_START);
+    if (!service) { CloseServiceHandle(manager); return 83; }
+    std::array<BYTE,8192> storage{}; DWORD needed{};
+    int result=0;
+    if (!QueryServiceConfigW(service,reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(storage.data()),
+            DWORD(storage.size()),&needed)) result=84;
+    else if (reinterpret_cast<LPQUERY_SERVICE_CONFIGW>(storage.data())->dwStartType==SERVICE_DISABLED &&
+             !ChangeServiceConfigW(service,SERVICE_NO_CHANGE,SERVICE_AUTO_START,SERVICE_NO_CHANGE,
+                 nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr)) result=85;
+    if (!result && processCount(L"SRanibro.exe")) result=81;
+    if (!result && !StartServiceW(service,0,nullptr) && GetLastError()!=ERROR_SERVICE_ALREADY_RUNNING) result=86;
+    if (!result) {
+        SERVICE_STATUS status{};
+        for (int i=0;i<20;++i) {
+            if (QueryServiceStatus(service,&status) && status.dwCurrentState==SERVICE_RUNNING) break;
+            Sleep(250);
+        }
+        if (status.dwCurrentState!=SERVICE_RUNNING) result=87;
+    }
+    CloseServiceHandle(service); CloseServiceHandle(manager);
+    return result;
+}
 void showPanel(int panel) {
     gUi.panel = panel;
     for(HWND handle:gUi.frameControls)ShowWindow(handle,panel==3?SW_SHOW:SW_HIDE);
@@ -617,8 +873,32 @@ void showPanel(int panel) {
     InvalidateRect(gUi.window, nullptr, TRUE);
 }
 void refreshGaze() {
-    int target = int(SendMessageW(gUi.gazeTarget, CB_GETCURSEL, 0, 0));
-    gUi.target = target == 1 ? live::Target::Common : live::Target::Pimax;
+    int source = int(SendMessageW(gUi.gazeSource, CB_GETCURSEL, 0, 0));
+    if (source < 0 || source > 7) source = 0;
+    gUi.target = source == 0 ? live::Target::Pimax : live::Target::Common;
+    if (gUi.gazeSourceLabel) {
+        const wchar_t* selected=source==0?L"選択中: Pimax経路（純正優先）":
+            source==1?L"選択中: Baballonia OSC → 共通プロバイダー":
+            source==2?L"選択中: PSVR2 Toolkit → 共通プロバイダー（実機未検証）":
+            source==3?L"選択中: SRanibro → 共通プロバイダー（HMD別に要検証）":
+            source==4?L"選択中: VIVE Pro Eye → 共通プロバイダー（実機未検証）":
+            source==5?L"選択中: VIVE Streaming → 共通プロバイダー（実機未検証）":
+            source==6?L"選択中: SteamVR視線アクション → 共通プロバイダー（実機未検証）":
+                      L"選択中: Varjo Native SDK → 共通プロバイダー（実機未検証）";
+        setText(gUi.gazeSourceLabel,selected);
+    }
+    if (gUi.gazePathNote) setText(gUi.gazePathNote,source==0?
+        L"Pimax経路の補正値を編集します。":
+        L"共通経路は同じ補正ファイルを使用。HMD別の設定はプロファイルで保存できます。");
+    if (gUi.sourceNote) setText(gUi.sourceNote,source==0?
+        L"純正XR5視線を優先。SRanibro使用時はPimaxブリッジへ切替。TunerのOSC転送は不要です。":
+        source==1?L"Baballonia → Tuner → 共通プロバイダー":
+        source==2?L"PSVR2 Toolkit → 直接ブリッジ → 共通プロバイダー（実機未確認）":
+        source==3?L"SRanibro → 共通プロバイダー（接続中HMDの投影情報を使用）":
+        source==4?L"SRanipal → Pro Eyeブリッジ → 共通プロバイダー（実機未確認）":
+        source==5?L"VIVE Streaming SDK → ブリッジ → 共通プロバイダー（実機未確認）":
+        source==6?L"SteamVR視線アクション → 左右投影 → 共通プロバイダー（実機未確認）":
+                  L"Varjo Native SDK → 両目視線ブリッジ → 共通プロバイダー（実機未確認）");
     gUi.gazeLoadedOk = gGazeStore.Read(gUi.target, gUi.gazeLoaded);
     if (gUi.gazeLoadedOk) {
         const auto& v = gUi.gazeLoaded.values;
@@ -796,23 +1076,93 @@ bool applyGazeFromUi(bool restore) {
     gBusy = false;
     refreshGaze();
     if (code == 0) {
-        setText(gUi.gazeStatus, getText(gUi.gazeStatus) + L"\r\n補正を保存・読戻し済み。VRChatの再起動は不要です。");
+        setText(gUi.gazeStatus, gOriginalText[gUi.gazeStatus] + L"\r\n補正を保存・読戻し済み。VRChatの再起動は不要です。");
     } else if (code == 61) MessageBoxW(gUi.window, L"読込後に補正が別の操作で変更されています。現在値を読み直しました。内容を確認してから再度操作してください。", L"変更の競合", MB_ICONWARNING);
     else if (code == 69) MessageBoxW(gUi.window, L"補正は保存されましたが、次回起動用の記録を更新できませんでした。", L"起動設定の記録", MB_ICONWARNING);
     else if (code != -2) MessageBoxW(gUi.window, (L"補正の保存・復元を完了できませんでした。現在値を再読込しました。\nエラー番号: " + std::to_wstring(code)).c_str(), L"視線補正", MB_ICONERROR);
     return code == 0 || code == 69;
 }
 
+void adjustGazeOffset(HWND edit, int direction) {
+    float value{};
+    if (!parseNumber(getText(edit), value) || value < -5.0f || value > 5.0f) {
+        MessageBoxW(gUi.window, L"左右の角度は-5～+5度で指定してください。", L"入力エラー", MB_ICONWARNING);
+        return;
+    }
+    const double next = std::max(-5.0, std::min(5.0,
+        std::round((static_cast<double>(value) + direction * 0.1) * 1000000.0) / 1000000.0));
+    setText(edit, gazeNumberText(static_cast<float>(next)));
+}
+
 struct NamedProfile {
-    int mode{}, target{};
+    int mode{}, source{};
     float area{}, aspect{}, x{}, y{}, left{}, right{};
     bool customAspect{};
 };
 std::filesystem::path profileFolder() { return backupFolder() / L"profiles"; }
+std::filesystem::path lastProfileFile() { return backupFolder() / L"last-profile.txt"; }
+std::filesystem::path lastSourceFile() { return backupFolder() / L"last-source.txt"; }
+std::filesystem::path previewZoomFile() { return backupFolder() / L"preview-zoom.txt"; }
+bool savePreviewZoom(int zoom) {
+    if (zoom<1 || zoom>4) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(backupFolder(),ec);
+    DWORD error{};
+    return !ec && live::AtomicWrite(previewZoomFile(),std::to_string(zoom)+"\n",error);
+}
+int readPreviewZoom() {
+    std::string bytes;
+    if (!live::ReadBytes(previewZoomFile(),bytes,4) || bytes.size()!=2 ||
+        bytes[0]<'1' || bytes[0]>'4' || bytes[1]!='\n') return 3;
+    return bytes[0]-'0';
+}
 bool validProfileName(const std::wstring& name) {
     return !name.empty() && name.size() <= 40 && name != L"." && name != L".." &&
         name.front() != L' ' && name.back() != L' ' &&
         name.find_first_of(L"<>:\"/\\|?*\r\n\t") == std::wstring::npos;
+}
+bool saveLastProfile(const std::wstring& name) {
+    if (!validProfileName(name)) return false;
+    const int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.data(), int(name.size()),
+                                           nullptr, 0, nullptr, nullptr);
+    if (length <= 0) return false;
+    std::string bytes(size_t(length), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name.data(), int(name.size()),
+                            bytes.data(), length, nullptr, nullptr) != length) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(backupFolder(), ec);
+    DWORD error{};
+    return !ec && live::AtomicWrite(lastProfileFile(), bytes + "\n", error);
+}
+bool readLastProfile(std::wstring& name) {
+    std::string bytes;
+    if (!live::ReadBytes(lastProfileFile(), bytes, 256)) return false;
+    while (!bytes.empty() && (bytes.back() == '\r' || bytes.back() == '\n')) bytes.pop_back();
+    if (bytes.empty()) return false;
+    const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), int(bytes.size()),
+                                           nullptr, 0);
+    if (length <= 0 || length > 40) return false;
+    std::wstring candidate(size_t(length), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), int(bytes.size()),
+                            candidate.data(), length) != length || !validProfileName(candidate)) return false;
+    name = std::move(candidate);
+    return true;
+}
+bool saveLastSource(int source) {
+    if (source < 0 || source > 7) return false;
+    std::error_code ec;
+    std::filesystem::create_directories(backupFolder(), ec);
+    DWORD error{};
+    return !ec && live::AtomicWrite(lastSourceFile(), std::to_string(source) + "\n", error);
+}
+bool readLastSource(int& source) {
+    std::string bytes;
+    if (!live::ReadBytes(lastSourceFile(), bytes, 8) || bytes.size() < 2 || bytes.size() > 3 ||
+        bytes[0] < '0' || bytes[0] > '7' ||
+        (bytes.size() == 2 && bytes[1] != '\n') ||
+        (bytes.size() == 3 && (bytes[1] != '\r' || bytes[2] != '\n'))) return false;
+    source = bytes[0] - '0';
+    return true;
 }
 void listProfiles() {
     auto name = getText(gUi.profileName);
@@ -829,24 +1179,43 @@ void listProfiles() {
     }
     setText(gUi.profileName, name);
 }
+bool readProfile(const std::wstring& name, NamedProfile& p);
+void restoreLastProfileSelection() {
+    std::wstring name;
+    if (!readLastProfile(name)) return;
+    NamedProfile profile{};
+    if (!readProfile(name, profile)) return;
+    const LRESULT index = SendMessageW(gUi.profileName, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                                      reinterpret_cast<LPARAM>(name.c_str()));
+    if (index == CB_ERR) return;
+    SendMessageW(gUi.profileName, CB_SETCURSEL, index, 0);
+    SendMessageW(gUi.gazeSource, CB_SETCURSEL, profile.source, 0);
+    gSelectedSource = profile.source;
+}
+void restoreLastSourceSelection() {
+    int source{};
+    if (!readLastSource(source)) return;
+    SendMessageW(gUi.gazeSource, CB_SETCURSEL, source, 0);
+    gSelectedSource = source;
+}
 bool readProfile(const std::wstring& name, NamedProfile& p) {
     if (!validProfileName(name)) return false;
     std::ifstream in(profileFolder() / (name + L".ini"), std::ios::binary);
     std::string magic;
     if (!std::getline(in, magic) || magic != "VRSS-TUNER-PROFILE-1") return false;
     int custom{};
-    if (!(in >> p.mode >> p.area >> p.aspect >> custom >> p.target >> p.x >> p.y >> p.left >> p.right)) return false;
+    if (!(in >> p.mode >> p.area >> p.aspect >> custom >> p.source >> p.x >> p.y >> p.left >> p.right)) return false;
     std::string extra;
     if (in >> extra) return false;
     p.customAspect = custom == 1;
     live::Values gaze{p.left, p.right, p.x, p.y};
     return (p.mode == 0 || p.mode == 1) && p.area >= 1 && p.area <= 100 &&
         p.aspect >= .5f && p.aspect <= 2 && (custom == 0 || custom == 1) &&
-        (p.target == 0 || p.target == 1) && live::Valid(gaze);
+        (p.source >= 0 && p.source <= 7) && live::Valid(gaze);
 }
 bool profileFromUi(NamedProfile& p) {
     p.mode = int(SendMessageW(gUi.mode, CB_GETCURSEL, 0, 0));
-    p.target = int(SendMessageW(gUi.gazeTarget, CB_GETCURSEL, 0, 0));
+    p.source = int(SendMessageW(gUi.gazeSource, CB_GETCURSEL, 0, 0));
     p.customAspect = isChecked(gUi.aspectCheck);
     if (!parseNumber(getText(gUi.area), p.area) ||
         !parseNumber(getText(gUi.aspect), p.aspect) ||
@@ -856,7 +1225,7 @@ bool profileFromUi(NamedProfile& p) {
         !parseNumber(getText(gUi.gazeRight), p.right)) return false;
     if (isChecked(gUi.gazeInvert)) p.y = -p.y;
     live::Values gaze{p.left, p.right, p.x, p.y};
-    return (p.mode == 0 || p.mode == 1) && (p.target == 0 || p.target == 1) &&
+    return (p.mode == 0 || p.mode == 1) && (p.source >= 0 && p.source <= 7) &&
         p.area >= 1 && p.area <= 100 && p.aspect >= .5f && p.aspect <= 2 && live::Valid(gaze);
 }
 bool writeProfile(const std::wstring& name, const NamedProfile& p) {
@@ -867,7 +1236,7 @@ bool writeProfile(const std::wstring& name, const NamedProfile& p) {
     if (ec) return false;
     std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(9);
     out << "VRSS-TUNER-PROFILE-1\n" << p.mode << ' ' << p.area << ' ' << p.aspect << ' '
-        << (p.customAspect ? 1 : 0) << ' ' << p.target << ' ' << p.x << ' ' << p.y
+        << (p.customAspect ? 1 : 0) << ' ' << p.source << ' ' << p.x << ' ' << p.y
         << ' ' << p.left << ' ' << p.right << '\n';
     DWORD error{};
     return live::AtomicWrite(folder / (name + L".ini"), out.str(), error);
@@ -896,7 +1265,8 @@ bool loadProfileToUi() {
     check(gUi.aspectCheck, p.customAspect);
     setText(gUi.aspect, numberText(p.aspect));
     EnableWindow(gUi.aspect, p.customAspect);
-    SendMessageW(gUi.gazeTarget, CB_SETCURSEL, p.target, 0);
+    SendMessageW(gUi.gazeSource, CB_SETCURSEL, p.source, 0);
+    gSelectedSource = p.source;
     refreshGaze();
     setText(gUi.gazeX, gazeNumberText(p.x));
     setText(gUi.gazeY, gazeNumberText(std::abs(p.y)));
@@ -907,18 +1277,33 @@ bool loadProfileToUi() {
     return true;
 }
 void switchProfile() {
+    const auto name = getText(gUi.profileName);
     NamedProfile selected{};
-    if (!readProfile(getText(gUi.profileName), selected)) {
+    if (!readProfile(name, selected)) {
         MessageBoxW(gUi.window, L"保存済みプロファイルを読み取れません。", L"プロファイル", MB_ICONWARNING);
         return;
     }
+    if (selected.source != 0 && processCount(L"vrss_gaze_provider.exe")) {
+        MessageBoxW(gUi.window,
+            L"Pimax経路が現在動作中です。共通経路のプロファイルは適用できません。\n"
+            L"共通経路へ切り替える場合は、先にVRChatとPimax側プロバイダーを通常終了してください。",
+            L"視線経路の競合", MB_ICONWARNING);
+        return;
+    }
+    if (selected.source == 0 && processCount(L"common_vrss_provider.exe")) {
+        MessageBoxW(gUi.window,
+            L"共通プロバイダーが現在動作中です。Pimax経路のプロファイルは適用できません。\n"
+            L"先に共通プロバイダーを停止してください。",
+            L"視線経路の競合", MB_ICONWARNING);
+        return;
+    }
     live::Snapshot available{};
-    if (!gGazeStore.Read(selected.target == 0 ? live::Target::Pimax : live::Target::Common, available)) {
+    if (!gGazeStore.Read(selected.source == 0 ? live::Target::Pimax : live::Target::Common, available)) {
         MessageBoxW(gUi.window, L"この経路の視線補正ファイルがありません。適用していません。", L"プロファイル", MB_ICONWARNING);
         return;
     }
     if (MessageBoxW(gUi.window, L"このプロファイルを画質と視線補正へ適用します。画質設定はVRChatの再起動後に反映します。続けますか？",
-        L"プロファイルの切替", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK) return;
+        L"プロファイルを適用", MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK) return;
     if (!loadProfileToUi()) return;
     NamedProfile wanted{};
     if (!profileFromUi(wanted)) return;
@@ -936,51 +1321,307 @@ void switchProfile() {
     if (gazeChanged && !applyGazeFromUi(false)) {
         MessageBoxW(gUi.window, driverChanged ? L"画質設定のみ保存されました。視線補正は適用できていません。" :
             L"視線補正を適用できませんでした。", L"一部だけ反映", MB_ICONWARNING);
-    } else MessageBoxW(gUi.window, driverChanged ? L"プロファイルを適用しました。画質への反映にはVRChatの再起動が必要です。" : L"プロファイルを適用しました。",
-                         L"切替完了", MB_ICONINFORMATION);
+    } else {
+        const bool profileSaved = saveLastProfile(name);
+        const bool sourceSaved = saveLastSource(wanted.source);
+        if (!profileSaved || !sourceSaved) {
+            MessageBoxW(gUi.window, L"プロファイルは適用されましたが、次回起動用の選択を保存できませんでした。",
+                        L"プロファイル", MB_ICONWARNING);
+        } else {
+            MessageBoxW(gUi.window, driverChanged ? L"プロファイルを適用しました。画質への反映にはVRChatの再起動が必要です。" : L"プロファイルを適用しました。",
+                        L"適用完了", MB_ICONINFORMATION);
+        }
+    }
 }
 
-babble::Relay gInputRelay;
+bool recent(uint64_t tick, uint64_t now) { return tick && now >= tick && now - tick < 3000; }
+bool currentFile(const std::filesystem::path& path) {
+    WIN32_FILE_ATTRIBUTE_DATA attributes{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes)) return false;
+    FILETIME time{}; GetSystemTimeAsFileTime(&time);
+    ULARGE_INTEGER now{}, written{};
+    now.LowPart = time.dwLowDateTime; now.HighPart = time.dwHighDateTime;
+    written.LowPart = attributes.ftLastWriteTime.dwLowDateTime;
+    written.HighPart = attributes.ftLastWriteTime.dwHighDateTime;
+    return now.QuadPart >= written.QuadPart && now.QuadPart - written.QuadPart < 30000000ULL;
+}
+int sourceFromRunRoute(const std::string& route) {
+    if (route == "Baballonia") return 1;
+    if (route == "PSVR2Toolkit") return 2;
+    if (route == "SRanibro") return 3;
+    if (route == "ViveProEye") return 4;
+    if (route == "ViveStreaming") return 5;
+    if (route == "SteamVREye") return 6;
+    if (route == "Varjo") return 7;
+    return -1;
+}
+bool readRecordedProviderTelemetry(telemetry::Snapshot& result, int& routeSource) {
+    routeSource = -1;
+    const auto root = backupFolder();
+    if (root.empty()) return false;
+    std::string raw;
+    if (!live::ReadBytes(root / L"active-run.txt", raw, 4096)) return false;
+    if (raw.size() >= 3 && raw.compare(0, 3, "\xef\xbb\xbf") == 0) raw.erase(0, 3);
+    while (!raw.empty() && (raw.back() == '\r' || raw.back() == '\n' || raw.back() == ' ')) raw.pop_back();
+    if (raw.empty()) return false;
+    int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, raw.data(), int(raw.size()), nullptr, 0);
+    if (count <= 0) return false;
+    std::wstring wide(size_t(count), L'\0');
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, raw.data(), int(raw.size()), wide.data(), count)) return false;
+    std::error_code error;
+    const auto runs = std::filesystem::weakly_canonical(root / L"runs", error);
+    if (error) return false;
+    const auto run = std::filesystem::weakly_canonical(std::filesystem::path(wide), error);
+    if (error) return false;
+    const auto prefix = runs.wstring() + L"\\";
+    const auto runText = run.wstring();
+    if (runText.size() <= prefix.size() || _wcsnicmp(runText.c_str(), prefix.c_str(), prefix.size()) != 0) return false;
+    const auto status = run / L"status.json";
+    if (!currentFile(status)) return false;
+    std::string json;
+    if (!live::ReadBytes(status, json, 2048) || !telemetry::Parse(json, result)) return false;
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, result.pid);
+    if (!process) return false;
+    const bool running = WaitForSingleObject(process, 0) == WAIT_TIMEOUT;
+    CloseHandle(process);
+    if (running) {
+        std::string route;
+        if (live::ReadBytes(run / L"input-route.txt", route, 64)) {
+            while (!route.empty() && (route.back() == '\r' || route.back() == '\n' || route.back() == ' ')) route.pop_back();
+            routeSource = sourceFromRunRoute(route);
+        }
+    }
+    return running;
+}
+bool readProviderTelemetry(telemetry::Snapshot& result, int& routeSource) {
+    if(readRecordedProviderTelemetry(result,routeSource))return true;
+    if(!processCount(L"common_vrss_provider.exe"))return false;
+    static uint64_t searchedAt=0;
+    const auto now=GetTickCount64();
+    if(now-searchedAt<1000)return false;
+    searchedAt=now;
+    std::error_code error;
+    const auto runs=backupFolder()/L"runs";
+    for(std::filesystem::directory_iterator item(runs,error),end;!error && item!=end;item.increment(error)) {
+        const auto run=item->path();
+        if(!item->is_directory(error) || item->is_symlink(error) || error || !currentFile(run/L"status.json"))continue;
+        std::string json,route;
+        telemetry::Snapshot candidate{};
+        if(!live::ReadBytes(run/L"status.json",json,2048) || !telemetry::Parse(json,candidate) ||
+           !live::ReadBytes(run/L"input-route.txt",route,64))continue;
+        while(!route.empty() && (route.back()=='\r'||route.back()=='\n'||route.back()==' '))route.pop_back();
+        const int source=sourceFromRunRoute(route);
+        if(source<1)continue;
+        HANDLE process=OpenProcess(SYNCHRONIZE|PROCESS_QUERY_LIMITED_INFORMATION,FALSE,candidate.pid);
+        if(!process)continue;
+        wchar_t executable[32768]{};DWORD length=DWORD(std::size(executable));
+        const bool matches=WaitForSingleObject(process,0)==WAIT_TIMEOUT &&
+            QueryFullProcessImageNameW(process,0,executable,&length) &&
+            _wcsicmp(std::filesystem::path(executable).filename().c_str(),L"common_vrss_provider.exe")==0;
+        CloseHandle(process);
+        if(!matches)continue;
+        DWORD writeError{};
+        live::AtomicWrite(backupFolder()/L"active-run.txt",run.u8string()+"\n",writeError);
+        result=candidate;routeSource=source;return true;
+    }
+    return false;
+}
+void updateLiveMonitor(bool vendor, bool common) {
+    const uint64_t now = GetTickCount64();
+    gLive.selectedSource = gSelectedSource.load();
+    gLive.common = common;
+    telemetry::Snapshot snapshot{};
+    int activeRoute=-1;
+    const bool telemetryReady = common && readProviderTelemetry(snapshot, activeRoute);
+    gLive.vendor = vendor && !telemetryReady;
+    gLive.routeVerified = telemetryReady && activeRoute>=1;
+    gLive.source = gLive.routeVerified ? activeRoute : vendor ? 0 : gLive.selectedSource;
+    gLive.inputRunning = gLive.source==0 ? vendor :
+        gLive.source==1 ? telemetryReady :
+        gLive.source==2 ? processCount(L"psvr2_gaze_bridge.exe")!=0 :
+        gLive.source==3 ? processCount(L"SRanibro.exe")!=0 :
+        (gLive.source==4||gLive.source==5) ? processCount(L"ViveStreamingGazeBridge.exe")!=0 :
+        gLive.source==6 ? processCount(L"steamvr_gaze_bridge.exe")!=0 :
+        processCount(L"varjo_gaze_bridge.exe")!=0;
+    gLive.relayFresh = gLive.relaySent = false;
+    gLive.receivedPerSecond = gLive.relayPerSecond = 0;
+    gLive.providerReady = gLive.source!=0 && telemetryReady && snapshot.registered;
+    if (gLive.source >= 1) {
+        if (gLive.providerReady && snapshot.pid != gLive.providerPid) {
+            gLive.lastProviderSequence = 0;
+            gLive.providerSequenceAt = 0;
+            gLive.lastReceived = snapshot.oscReadings;
+        }
+        if (gLive.providerReady && snapshot.sourceSequence != gLive.lastProviderSequence) {
+            gLive.providerSequenceAt = now;
+            gLive.lastProviderSequence = snapshot.sourceSequence;
+        }
+        gLive.relayFresh = gLive.providerReady && snapshot.fresh && recent(gLive.providerSequenceAt, now);
+        gLive.relaySent = gLive.relayFresh;
+        gLive.receivedPerSecond = gLive.relayFresh ? 1 : 0;
+        if(gLive.source==1) {
+            gLive.receivedPerSecond=snapshot.oscReadings>=gLive.lastReceived?snapshot.oscReadings-gLive.lastReceived:0;
+            gLive.lastReceived=snapshot.oscReadings;
+        }
+        gLive.relayPerSecond = gLive.receivedPerSecond;
+    }
+    gLive.consumerReady = gLive.accepted = gLive.failure = false;
+    gLive.acceptedPerSecond = 0;
+    if (gLive.providerReady) {
+        gLive.provider = snapshot;
+        if (snapshot.pid != gLive.providerPid) {
+            gLive.providerPid = snapshot.pid;
+            gLive.lastAccepted = snapshot.accepted();
+            gLive.lastFailures = snapshot.submitFailures;
+            gLive.acceptedAt = gLive.failureAt = 0;
+        } else {
+            const uint64_t accepted = snapshot.accepted();
+            gLive.acceptedPerSecond = accepted >= gLive.lastAccepted ? accepted - gLive.lastAccepted : 0;
+            if (accepted > gLive.lastAccepted) gLive.acceptedAt = now;
+            if (snapshot.submitFailures > gLive.lastFailures) gLive.failureAt = now;
+            gLive.lastAccepted = accepted;
+            gLive.lastFailures = snapshot.submitFailures;
+        }
+        gLive.consumerReady = snapshot.consumerCount > 0 && snapshot.queryStatus == 0;
+        gLive.failure = snapshot.queryStatus != 0 || recent(gLive.failureAt, now);
+        gLive.accepted = gLive.consumerReady && snapshot.fresh && recent(gLive.acceptedAt, now) && !gLive.failure;
+    } else {
+        gLive.providerPid = 0;
+        gLive.acceptedAt = gLive.failureAt = 0;
+    }
+    if (gUi.liveMonitor) InvalidateRect(gUi.liveMonitor, nullptr, FALSE);
+}
+void updateGazeMap() {
+    if (!gUi.liveMonitor || gUi.panel != 2) return;
+    if (gLive.vendor) {
+        std::array<float, 4> location{};
+        if (gPimaxGaze.Read(location)) { gPimaxLocation=location; gPimaxFreshAt=GetTickCount64(); }
+        if (gNvidiaQueue.Read(location)) { gNvidiaLocation=location; gNvidiaFreshAt=GetTickCount64(); }
+    } else if (gLive.common) {
+        telemetry::Snapshot snapshot{};
+        int route=-1;
+        if (readProviderTelemetry(snapshot,route) && snapshot.registered && snapshot.pid==gLive.providerPid) {
+            const auto now=GetTickCount64();
+            if (snapshot.sourceSequence!=gLive.lastProviderSequence) {
+                gLive.providerSequenceAt=now;
+                gLive.lastProviderSequence=snapshot.sourceSequence;
+            }
+            gLive.provider=snapshot;
+            if (gLive.source>=1) gLive.relayFresh=gLive.relaySent=
+                snapshot.fresh && recent(gLive.providerSequenceAt,now);
+        }
+    }
+    InvalidateRect(gUi.liveMonitor,nullptr,FALSE);
+}
 void updateInputStatus() {
     if (!gUi.inputStatus) return;
+    const int source = gSelectedSource.load();
     const bool vendor = processCount(L"vrss_gaze_provider.exe") != 0;
     const bool common = processCount(L"common_vrss_provider.exe") != 0;
-    if (gInputRelay.Running()) {
-        live::Snapshot calibration{};
-        if (gGazeStore.Read(live::Target::Common, calibration))
-            gInputRelay.SetCalibration(calibration.values.x_gain, calibration.values.y_gain,
-                calibration.values.left_deg, calibration.values.right_deg);
+    const bool sranibro = processCount(L"SRanibro.exe") != 0;
+    const bool xr5 = processCount(L"platform_runtime_XR5EYECHIP_WIN10_x64.exe") != 0;
+    const bool bridgeInstalled=GetFileAttributesW(
+        L"C:\\Program Files\\Pimax\\Runtime\\drivers\\sranibro_eye\\bin\\win64\\driver_sranibro_eye.dll")!=INVALID_FILE_ATTRIBUTES;
+    const PimaxServiceState pimaxService=pimaxServiceState();
+    std::wstring status;
+    if (source == 0) {
+        status = vendor ? L"Pimax経路: NVIDIAプロバイダー起動中" : L"Pimax経路: NVIDIAプロバイダー停止中";
+        status += xr5 ? L"\r\n入力候補: Pimax純正XR5ランタイム（視線値は未計測）" :
+            sranibro && bridgeInstalled ? L"\r\n入力候補: SRanibro → Pimaxブリッジ（視線値は未計測）" :
+            sranibro ? L"\r\nSRanibro起動中・Pimaxブリッジ未検出" :
+            pimaxService.disabled ? L"\r\n純正視線サービスは無効です。復帰が必要です。" :
+            pimaxService.running ? L"\r\n純正サービス起動中。視線が戻らなければPimaxサービスを再起動してください。" :
+            L"\r\nPimax視線入力を待っています。";
+        status += L"\r\nTunerのOSC転送は使用しません。";
+    } else if (source == 1) {
+        telemetry::Snapshot osc{}; int route=-1;
+        const bool receiving=common && readProviderTelemetry(osc,route) && route==1;
+        status = receiving ? L"Baballonia OSC: バックグラウンドで受信中" : L"Baballonia OSC: 停止中";
+        if(receiving) {
+            status+=L"\r\nOSCパケット " + std::to_wstring(osc.oscDatagrams) + L" / 視線値 " + std::to_wstring(osc.oscReadings);
+            if(!osc.oscDatagrams)status+=L"\r\n未受信: Baballoniaの送信先を127.0.0.1と下記の受信ポートに設定してください。";
+            else if(!osc.oscReadings)status+=L"\r\nパケットは受信済みですが、対応する視線値がありません。Eye出力を確認してください。";
+            else if(!osc.fresh)status+=L"\r\n新しい左右4軸の視線値を待っています。";
+        }
+        status+=L"\r\nBaballonia → Tuner受信ポート → VRCFaceTracking転送先。カメラの再接続は不要です。";
+    } else {
+        const bool toolkit = source == 2;
+        const bool bridge = processCount(L"psvr2_gaze_bridge.exe") != 0;
+        const bool vive = source == 4 || source == 5;
+        const bool viveBridge = processCount(L"ViveStreamingGazeBridge.exe") != 0;
+        const bool steamBridge = processCount(L"steamvr_gaze_bridge.exe") != 0;
+        const bool varjoBridge = processCount(L"varjo_gaze_bridge.exe") != 0;
+        status = toolkit ?
+            (bridge ? L"PSVR2 Toolkit CAPIブリッジ起動中" : L"PSVR2 Toolkit CAPIブリッジ停止中") :
+            vive ? (viveBridge ? L"VIVE視線ブリッジ起動中（実機未検証）" : L"VIVE視線ブリッジ停止中") :
+            source==6 ? (steamBridge ? L"SteamVR視線ブリッジ起動中（実機未検証）" : L"SteamVR視線ブリッジ停止中") :
+            source==7 ? (varjoBridge ? L"Varjo視線ブリッジ起動中（実機未検証）" : L"Varjo視線ブリッジ停止中") :
+            (sranibro ? L"SRanibro起動中" : L"SRanibro停止中");
+        status += common ? L"\r\n共通プロバイダー起動中。視線の受理は下の状態で確認。" :
+                  toolkit ? L"\r\n共通プロバイダー停止中。Start-PSVR2-Toolkit.cmdを実行。" :
+                  vive ? L"\r\n共通プロバイダー停止中。VIVE起動スクリプトを実行。" :
+                  source==6 ? L"\r\n共通プロバイダー停止中。Start-SteamVR-Eye.cmdを実行。" :
+                  source==7 ? L"\r\n共通プロバイダー停止中。Start-Varjo.cmdを実行。" :
+                         L"\r\n共通プロバイダー停止中。Start-SRanibro.cmdを実行。";
+        if (vendor) status += L"\r\nPimax視線プロバイダーを検出。選択した経路へ切り替えると送信だけを停止します。";
+        status += L"\r\nTunerのOSC転送は使用しません。";
     }
-    std::wstring status = gInputRelay.Running() ? L"Baballonia OSC: 受信中" : L"Baballonia OSC: 停止中";
-    status += L"\r\n入力 " + std::to_wstring(gInputRelay.Received()) +
-        L" / 共通経路へ送信 " + std::to_wstring(gInputRelay.Sent());
-    status += vendor ? L"\r\nPimax公式経路を優先中。共通経路への送信は停止します。" :
-        common ? L"\r\n共通プロバイダーを検出。UDP受信モードで起動してください。" :
-                 L"\r\n共通プロバイダーが停止中。送信は行いません。";
-    status += L"\r\nOSC値からの位置変換は実機での合わせ込みが必要です。";
+    updateLiveMonitor(vendor, common);
+    if (gLive.routeVerified && source!=gLive.source)
+        status += L"\r\n選択中の経路と稼働中の経路が異なります。稼働: " +
+            std::wstring(gazeSourceName(gLive.source,false));
     setText(gUi.inputStatus, status);
-    EnableWindow(gUi.inputStart, !gInputRelay.Running());
-    EnableWindow(gUi.inputStop, gInputRelay.Running());
+    const bool changing=gRouteOperation && WaitForSingleObject(gRouteOperation,0)==WAIT_TIMEOUT;
+    if(changing)status+=gRouteStopping?L"\r\n視線経路をすべて停止しています。":L"\r\n選択した視線経路へ切り替えています。";
+    setText(gUi.inputStatus,status);
+    setText(gUi.inputStart,(vendor || common)?L"選択した経路に切替":L"視線経路を起動");
+    EnableWindow(gUi.inputPort, source == 1 && !changing);
+    EnableWindow(gUi.inputForward, source == 1 && !changing);
+    EnableWindow(gUi.inputStart,!changing);
+    EnableWindow(gUi.inputStop,TRUE);
 }
-void startInputRelay() {
-    float portFloat{}, forwardFloat{};
-    if (!parseNumber(getText(gUi.inputPort), portFloat) || portFloat != std::floor(portFloat) ||
-        portFloat < 1 || portFloat > 65535 ||
-        !parseNumber(getText(gUi.inputForward), forwardFloat) || forwardFloat != std::floor(forwardFloat) ||
-        forwardFloat < 0 || forwardFloat > 65535 || forwardFloat == portFloat) {
-        MessageBoxW(gUi.window, L"ポート番号を確認してください。転送先は0で無効にできます。", L"視線入力", MB_ICONWARNING);
-        return;
+void startRouteOperation(bool stop) {
+    if(stop && gRouteStopping && gRouteOperation && WaitForSingleObject(gRouteOperation,0)==WAIT_TIMEOUT)return;
+    if(!stop && gRouteOperation && WaitForSingleObject(gRouteOperation,0)==WAIT_TIMEOUT)return;
+    const int source=gSelectedSource.load();
+    if(source<0 || source>7)return;
+    float port=9020,forward=8888;
+    if(!stop && source==1 &&
+       (!parseNumber(getText(gUi.inputPort),port) || port!=std::floor(port) || port<1 || port>65535 ||
+        !parseNumber(getText(gUi.inputForward),forward) || forward!=std::floor(forward) || forward<0 || forward>65535 ||
+        port==forward || port==5556 || forward==5556)) {
+        MessageBoxW(gUi.window,L"ポート番号を確認してください。転送先は0で無効にできます。",L"視線入力",MB_ICONWARNING);return;
     }
-    live::Snapshot common{};
-    live::Values gain{};
-    if (gGazeStore.Read(live::Target::Common, common)) gain = common.values;
-    const bool started = gInputRelay.Start(int(portFloat), gain.x_gain, gain.y_gain,
-        gain.left_deg, gain.right_deg, [] {
-            return processCount(L"vrss_gaze_provider.exe") == 0 &&
-                processCount(L"common_vrss_provider.exe") > 0;
-        }, 5556, int(forwardFloat));
-    if (!started) MessageBoxW(gUi.window, L"OSC受信を開始できません。ポートが他のソフトで使用中か確認してください。", L"視線入力", MB_ICONWARNING);
+    auto script=gResearch/L"Set-Gaze-Route.ps1";
+    if(!std::filesystem::is_regular_file(script))script=gResearch/L"vrss-tuner/portable/Set-Gaze-Route.ps1";
+    if(!std::filesystem::is_regular_file(script)) {
+        MessageBoxW(gUi.window,L"起動スクリプトを開けませんでした。",L"視線入力",MB_ICONWARNING);return;
+    }
+    if(stop) {
+        gFrameRuntime.Stop();
+        std::ofstream paused(backupFolder()/L"gaze-paused.txt");paused<<"User requested stop\n";
+    }
+    const wchar_t* routes[]={L"Pimax",L"Baballonia",L"PSVR2Toolkit",L"SRanibro",L"ViveProEye",L"ViveStreaming",L"SteamVREye",L"Varjo"};
+    std::wstring args=L"-NoProfile -ExecutionPolicy Bypass -File \""+script.wstring()+L"\" ";
+    args+=stop?L"-Stop":L"-InputRoute "+std::wstring(routes[source])+L" -OscPort "+std::to_wstring(int(port))+L" -OscForward "+std::to_wstring(int(forward));
+    wchar_t system[32768]{};GetSystemDirectoryW(system,DWORD(std::size(system)));
+    const auto shell=std::filesystem::path(system)/L"WindowsPowerShell/v1.0/powershell.exe";
+    SHELLEXECUTEINFOW launch{sizeof(launch)};launch.hwnd=gUi.window;launch.fMask=SEE_MASK_NOCLOSEPROCESS;
+    launch.lpFile=shell.c_str();launch.lpParameters=args.c_str();launch.nShow=SW_HIDE;
+    if(!ShellExecuteExW(&launch) || !launch.hProcess) {
+        MessageBoxW(gUi.window,L"起動スクリプトを開けませんでした。",L"視線入力",MB_ICONWARNING);return;
+    }
+    if(gRouteOperation)CloseHandle(gRouteOperation);
+    gRouteOperation=launch.hProcess;gRouteStopping=stop;
     updateInputStatus();
+}
+void pollRouteOperation() {
+    if(!gRouteOperation || WaitForSingleObject(gRouteOperation,0)==WAIT_TIMEOUT)return;
+    DWORD result{};GetExitCodeProcess(gRouteOperation,&result);CloseHandle(gRouteOperation);gRouteOperation=nullptr;
+    if(result) {
+        const auto detail=frame::LogTail(backupFolder()/L"route-error.txt");
+        MessageBoxW(gUi.window,(std::wstring(L"視線経路の操作を完了できませんでした。\r\n")+detail).c_str(),L"視線入力",MB_ICONWARNING);
+    }
 }
 
 void updateFrameStatus() {
@@ -1123,7 +1764,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         control(L"STATIC", L"プロファイル", SS_LEFT, 230, 14, 95, 25);
         gUi.profileName = control(L"COMBOBOX", L"", CBS_DROPDOWN | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP, 328, 10, 165, 250, kProfileName);
         gUi.profileSave = control(L"BUTTON", L"保存", WS_TABSTOP | BS_PUSHBUTTON, 505, 10, 72, 27, kProfileSave);
-        gUi.profileSwitch = control(L"BUTTON", L"切替", WS_TABSTOP | BS_PUSHBUTTON, 585, 10, 85, 27, kProfileSwitch);
+        gUi.profileSwitch = control(L"BUTTON", L"適用", WS_TABSTOP | BS_PUSHBUTTON, 585, 10, 85, 27, kProfileSwitch);
         gUi.driverTab = control(L"BUTTON", L"画質", BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_TABSTOP, 20, 47, 110, 30, kDriverTab);
         gUi.gazeTab = control(L"BUTTON", L"視線補正", BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_TABSTOP, 140, 47, 110, 30, kGazeTab);
         gUi.inputTab = control(L"BUTTON", L"視線入力", BS_AUTORADIOBUTTON | BS_PUSHLIKE | WS_TABSTOP, 260, 47, 110, 30, kInputTab);
@@ -1171,17 +1812,8 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                              20, 595, 650, 55, kStatusEdit);
         control(L"STATIC", L"● 要再起動 = 対象アプリのみ。保存時に確認します。", SS_LEFT, 20, 664, 655, 23);
         gCreatingPanel = 1;
-        control(L"STATIC", L"補正する経路", SS_LEFT, 20, 110, 170, 24);
-        gUi.gazeTarget = control(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_TABSTOP, 205, 106, 340, 120, kGazeTarget);
-        for (const wchar_t* name : {L"Pimax経路", L"共通プロバイダー"}) {
-            const auto translated = language::Text(name);
-            SendMessageW(gUi.gazeTarget, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(translated.c_str()));
-        }
-        const bool preferCommon = !processCount(L"vrss_gaze_provider.exe") &&
-            (processCount(L"common_vrss_provider.exe") ||
-             (!compatiblePimaxDriver() && !gResearch.empty() &&
-              std::filesystem::is_regular_file(gResearch / L"common-vrss-provider/common_vrss_provider.exe")));
-        SendMessageW(gUi.gazeTarget, CB_SETCURSEL, preferCommon ? 1 : 0, 0);
+        control(L"STATIC", L"視線入力タブで選択中のソース", SS_LEFT, 20, 110, 230, 24);
+        gUi.gazeSourceLabel=control(L"STATIC",L"",SS_LEFT,255,110,415,28);
         control(L"STATIC", L"横方向の倍率", SS_LEFT, 20, 155, 170, 24);
         gUi.gazeX = control(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 205, 151, 115, 27, kGazeX);
         control(L"STATIC", L"0.1～2", SS_LEFT, 335, 155, 200, 24);
@@ -1190,11 +1822,15 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         gUi.gazeInvert = control(L"BUTTON", L"上下方向を反転", BS_AUTOCHECKBOX | WS_TABSTOP, 350, 197, 220, 27, kGazeInvert);
         control(L"STATIC", L"左目の横角度オフセット", SS_LEFT, 20, 245, 180, 24);
         gUi.gazeLeft = control(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 205, 241, 115, 27, kGazeLeft);
-        control(L"STATIC", L"度（-5～+5）", SS_LEFT, 335, 245, 200, 24);
+        control(L"BUTTON", L"−", WS_TABSTOP | BS_PUSHBUTTON, 335, 241, 30, 27, kGazeLeftMinus);
+        control(L"BUTTON", L"+", WS_TABSTOP | BS_PUSHBUTTON, 373, 241, 30, 27, kGazeLeftPlus);
+        control(L"STATIC", L"0.1度刻み（-5～+5）", SS_LEFT, 415, 245, 250, 24);
         control(L"STATIC", L"右目の横角度オフセット", SS_LEFT, 20, 290, 180, 24);
         gUi.gazeRight = control(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | WS_TABSTOP, 205, 286, 115, 27, kGazeRight);
-        control(L"STATIC", L"度（-5～+5）", SS_LEFT, 335, 290, 200, 24);
-        control(L"STATIC", L"Pimax公式経路があれば優先。共通経路のUDP入力は補正済みの値として扱います。", SS_LEFT, 20, 328, 650, 26);
+        control(L"BUTTON", L"−", WS_TABSTOP | BS_PUSHBUTTON, 335, 286, 30, 27, kGazeRightMinus);
+        control(L"BUTTON", L"+", WS_TABSTOP | BS_PUSHBUTTON, 373, 286, 30, 27, kGazeRightPlus);
+        control(L"STATIC", L"0.1度刻み（-5～+5）", SS_LEFT, 415, 290, 250, 24);
+        gUi.gazePathNote=control(L"STATIC",L"",SS_LEFT,20,328,650,40);
         gUi.gazeApply = control(L"BUTTON", L"視線補正を反映", WS_TABSTOP | BS_PUSHBUTTON, 20, 386, 150, 32, kGazeApply);
         gUi.gazeRestore = control(L"BUTTON", L"操作を戻す", WS_TABSTOP | BS_PUSHBUTTON, 180, 386, 145, 32, kGazeRestore);
         control(L"BUTTON", L"現在値を読込", WS_TABSTOP | BS_PUSHBUTTON, 505, 550, 165, 32, kGazeRefresh);
@@ -1202,16 +1838,40 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         control(L"STATIC", L"VRChat再起動不要。保存前の補正は経路別にバックアップします。", SS_LEFT, 20, 664, 655, 23);
         gCreatingPanel = 2;
         control(L"STATIC",L"視線の入力元",SS_LEFT,20,105,180,23);
-        control(L"STATIC",L"Baballonia OSC（左目・右目の視線）",SS_LEFT,205,105,420,23);
+        gUi.gazeSource=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL,205,101,450,260,kGazeSource);
+        for (const wchar_t* name : {L"Pimax経路（純正優先）",L"Baballonia OSC",L"PSVR2 Toolkit（直接）",L"SRanibro（共通）",L"VIVE Pro Eye（SRanipal・実機未検証）",L"VIVE Streaming（実機未検証）",L"SteamVR視線アクション（実機未検証）",L"Varjo Native SDK（実機未検証）"}) {
+            const auto translated=language::Text(name);
+            SendMessageW(gUi.gazeSource,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(translated.c_str()));
+        }
+        const bool preferCommon = !processCount(L"vrss_gaze_provider.exe") &&
+            (processCount(L"common_vrss_provider.exe") ||
+             (!compatiblePimaxDriver() && !gResearch.empty() &&
+              std::filesystem::is_regular_file(gResearch / L"common-vrss-provider/common_vrss_provider.exe")));
+        telemetry::Snapshot startupProvider{};int startupRoute=-1;
+        const bool knownRoute=readProviderTelemetry(startupProvider,startupRoute) && startupRoute>=1;
+        gSelectedSource=knownRoute?startupRoute:preferCommon?1:0;
+        SendMessageW(gUi.gazeSource,CB_SETCURSEL,gSelectedSource.load(),0);
         control(L"STATIC",L"受信ポート",SS_LEFT,20,150,180,23);
         gUi.inputPort=control(L"EDIT",L"9020",WS_BORDER | ES_NUMBER | WS_TABSTOP,205,146,110,27,kInputPort);
         control(L"STATIC",L"OSC転送先（0=なし）",SS_LEFT,20,190,180,23);
         gUi.inputForward=control(L"EDIT",L"8888",WS_BORDER | ES_NUMBER | WS_TABSTOP,205,186,110,27,kInputForward);
         control(L"STATIC",L"VRCFaceTrackingへ転送する場合は8888",SS_LEFT,335,190,320,23);
-        gUi.inputStart=control(L"BUTTON",L"配信を開始",WS_TABSTOP | BS_PUSHBUTTON,20,240,145,32,kInputStart);
-        gUi.inputStop=control(L"BUTTON",L"停止",WS_TABSTOP | BS_PUSHBUTTON,180,240,105,32,kInputStop);
-        gUi.inputStatus=control(L"EDIT",L"停止中",WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,20,295,650,145,kInputStatus);
-        control(L"STATIC",L"Baballoniaの出力先を受信ポートに設定します。Pimax公式経路が有効なら共通経路への送信を止めます。",SS_LEFT,20,460,650,52);
+        { std::ifstream ports(backupFolder()/L"osc-settings.txt");int input=0,forward=-1;
+          if(ports>>input>>forward && input>=1 && input<=65535 && forward>=0 && forward<=65535 && input!=forward) {
+              setText(gUi.inputPort,std::to_wstring(input));setText(gUi.inputForward,std::to_wstring(forward));
+          }
+        }
+        gUi.inputStart=control(L"BUTTON",L"視線経路を起動",WS_TABSTOP | BS_PUSHBUTTON,20,240,180,32,kInputStart);
+        gUi.inputStop=control(L"BUTTON",L"停止",WS_TABSTOP | BS_PUSHBUTTON,215,240,105,32,kInputStop);
+        control(L"STATIC",L"表示倍率",SS_LEFT,350,245,110,23);
+        gUi.previewZoom=control(L"COMBOBOX",L"",CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL,470,240,100,110,kPreviewZoom);
+        for(const wchar_t* label:{L"1x",L"2x",L"3x",L"4x"})
+            SendMessageW(gUi.previewZoom,CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));
+        gPreviewZoom=readPreviewZoom();
+        SendMessageW(gUi.previewZoom,CB_SETCURSEL,gPreviewZoom-1,0);
+        gUi.inputStatus=control(L"EDIT",L"停止中",WS_BORDER | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL,20,285,650,64,kInputStatus);
+        gUi.liveMonitor=control(L"VrssLiveMonitor",L"",0,20,358,650,290);
+        gUi.sourceNote=control(L"STATIC",L"",SS_LEFT,20,655,650,25);
         gCreatingPanel=3;
         control(L"STATIC",L"Steam Frame / NVIDIA 596.02",SS_LEFT,20,105,650,28);
         control(L"STATIC",L"SteamVRのSteamリンク設定で、他のPCアプリへの視線共有を有効にしてください。",SS_LEFT,20,150,650,48);
@@ -1223,12 +1883,15 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         control(L"STATIC",L"VRレイアウト4を使用。上下補正はFrame入力に内蔵しています。\r\n追加の補正は共通プロバイダーで調整できます。\r\n終了時に一時設定を復元します。ゲームは強制終了しません。",SS_LEFT,20,500,650,95);
         gCreatingPanel = -1;
         listProfiles();
+        restoreLastProfileSelection();
+        restoreLastSourceSelection();
         if constexpr(!kOfflineUiTest)refresh();
         refreshGaze();
         updateEstimate();
         updateInputStatus();
         updateFrameStatus();
         SetTimer(window, 1, 1000, nullptr);
+        SetTimer(window, 2, 50, nullptr);
         showPanel(0);
         return 0;
     }
@@ -1247,13 +1910,32 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             language::english = SendMessageW(gUi.language, CB_GETCURSEL, 0, 0) == 1;
             saveLanguage();
             applyLanguage();
+            refreshGaze();
+            updateInputStatus();
             return 0;
         }
         if ((HIWORD(wParam)==EN_CHANGE && (LOWORD(wParam)==kAreaEdit || LOWORD(wParam)==kAspectEdit)) ||
             (HIWORD(wParam)==CBN_SELCHANGE && (LOWORD(wParam)==kModeCombo || LOWORD(wParam)==kLayoutCombo || LOWORD(wParam)==kEstimateMsaa))) {
             updateEstimate();return 0;
         }
-        if (LOWORD(wParam) == kGazeTarget && HIWORD(wParam) == CBN_SELCHANGE) { refreshGaze(); return 0; }
+        if (LOWORD(wParam) == kGazeSource && HIWORD(wParam) == CBN_SELCHANGE) {
+            const int source=int(SendMessageW(gUi.gazeSource,CB_GETCURSEL,0,0));
+            if (source<0 || source>7) return 0;
+            gSelectedSource=source;
+            if (!saveLastSource(source))
+                MessageBoxW(gUi.window,L"視線入力元の選択を次回起動用に保存できませんでした。",
+                            L"視線入力",MB_ICONWARNING);
+            refreshGaze(); updateInputStatus(); return 0;
+        }
+        if (LOWORD(wParam)==kPreviewZoom && HIWORD(wParam)==CBN_SELCHANGE) {
+            const int selected=int(SendMessageW(gUi.previewZoom,CB_GETCURSEL,0,0));
+            if (selected>=0 && selected<4) {
+                gPreviewZoom=selected+1;
+                savePreviewZoom(gPreviewZoom);
+                InvalidateRect(gUi.liveMonitor,nullptr,FALSE);
+            }
+            return 0;
+        }
         if (HIWORD(wParam) == BN_CLICKED) {
             switch (LOWORD(wParam)) {
             case kRefreshButton: refresh(); return 0;
@@ -1263,6 +1945,10 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             case kDriverTab: showPanel(0); return 0;
             case kGazeTab: showPanel(1); return 0;
             case kGazeRefresh: refreshGaze(); return 0;
+            case kGazeLeftMinus: adjustGazeOffset(gUi.gazeLeft, -1); return 0;
+            case kGazeLeftPlus: adjustGazeOffset(gUi.gazeLeft, 1); return 0;
+            case kGazeRightMinus: adjustGazeOffset(gUi.gazeRight, -1); return 0;
+            case kGazeRightPlus: adjustGazeOffset(gUi.gazeRight, 1); return 0;
             case kGazeApply: applyGazeFromUi(false); return 0;
             case kGazeRestore: applyGazeFromUi(true); return 0;
             case kGazeReset:
@@ -1278,10 +1964,13 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
                     if(vrchatRunning() || processCount(L"Unity.exe"))
                         throw std::runtime_error("Close VRChat and Unity before launching");
                     gFrameRuntime.LaunchGame(window);
-                } catch(const std::exception& e) {MessageBoxA(window,e.what(),"Frame launch stopped",MB_ICONWARNING);}
+                } catch(const std::exception& e) {
+                    const auto detail = frameLaunchError(e.what());
+                    ::MessageBoxW(window, detail.c_str(), language::english ? L"Frame launch stopped" : L"Frameでの起動を中止しました", MB_ICONWARNING);
+                }
                 updateFrameStatus();return 0;
-            case kInputStart: startInputRelay(); return 0;
-            case kInputStop: gInputRelay.Stop(); updateInputStatus(); return 0;
+            case kInputStart: startRouteOperation(false); return 0;
+            case kInputStop: startRouteOperation(true); return 0;
             }
         }
         break;
@@ -1290,11 +1979,20 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             setText(gUi.area,std::to_wstring(SendMessageW(gUi.areaSlider,TBM_GETPOS,0,0)));updateEstimate();return 0;
         }
         break;
-    case WM_TIMER: if (wParam == 1) {
-        if constexpr(kOfflineUiTest)return 0;
-        if(!gBusy)gFrameRuntime.Tick({processCount(L"vrserver.exe")!=0,vrchatRunning() || processCount(L"Unity.exe")!=0,
-            gInputRelay.Running() || processCount(L"common_vrss_provider.exe")!=0 || processCount(L"vrss_gaze_provider.exe")!=0,false},backupFolder(),window);
-        updateFrameStatus(); updateInputStatus(); return 0; } break;
+    case WM_TIMER:
+        if (wParam == 1) {
+            if constexpr(kOfflineUiTest) return 0;
+            if(!gBusy) gFrameRuntime.Tick({processCount(L"vrserver.exe")!=0,
+                vrchatRunning() || processCount(L"Unity.exe")!=0,
+                processCount(L"common_vrss_provider.exe")!=0 ||
+                processCount(L"vrss_gaze_provider.exe")!=0,false},backupFolder(),window);
+            pollRouteOperation(); updateFrameStatus(); updateInputStatus(); return 0; }
+        if (wParam == 2) {
+            updateGazeMap();
+            if (!gLive.vendor) { gPimaxGaze.Close(); gNvidiaQueue.Close(); gPimaxFreshAt=0; gNvidiaFreshAt=0; }
+            return 0;
+        }
+        break;
     case WM_CTLCOLORSTATIC: {
         HDC dc = reinterpret_cast<HDC>(wParam); HWND item = reinterpret_cast<HWND>(lParam);
         SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(25, 25, 25));
@@ -1303,7 +2001,7 @@ LRESULT CALLBACK windowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
     }
     case WM_CLOSE: if (gBusy) return 0; break;
-    case WM_DESTROY: KillTimer(window, 1); gFrameRuntime.Stop(); gInputRelay.Stop(); if(gBoldFont) DeleteObject(gBoldFont);PostQuitMessage(0); return 0;
+    case WM_DESTROY: KillTimer(window, 1); KillTimer(window, 2); gPimaxGaze.Close(); gNvidiaQueue.Close(); gFrameRuntime.Stop(); if(gRouteOperation)CloseHandle(gRouteOperation); if(gBoldFont) DeleteObject(gBoldFont);PostQuitMessage(0); return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }
@@ -1327,6 +2025,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             const bool pimaxCalibration = gGazeStore.Read(live::Target::Pimax, pimax);
             const bool commonCalibration = gGazeStore.Read(live::Target::Common, common);
             const bool compatiblePimax = !gResearch.empty() && compatiblePimaxDriver();
+            const PimaxServiceState pimaxService=pimaxServiceState();
+            const bool bridgeInstalled=GetFileAttributesW(
+                L"C:\\Program Files\\Pimax\\Runtime\\drivers\\sranibro_eye\\bin\\win64\\driver_sranibro_eye.dll")!=INVALID_FILE_ATTRIBUTES;
             const bool commonBinary = !gResearch.empty() &&
                 std::filesystem::is_regular_file(gResearch / L"common-vrss-provider/common_vrss_provider.exe");
             std::ofstream report(argv[2], std::ios::binary | std::ios::trunc);
@@ -1337,10 +2038,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                        << "nvapi_status=" << status << '\n'
                        << "graphics_write_entry=" << (status == NVAPI_OK && session.hidden.set ? "available" : "unavailable") << '\n'
                        << "vrss_allow=" << (status == NVAPI_OK && values.allow.found && values.allow.raw == 1 ? "enabled" : "not_enabled") << '\n'
+                       << "hmd_test_branch=" << (status == NVAPI_OK && values.gate.found && values.gate.raw == 0 ? "enabled" : "unavailable") << '\n'
                        << "vrss_mode=" << (status != NVAPI_OK ? "unknown" : values.mode.raw ? "on" : "off") << '\n'
                        << "pimax_calibration=" << (pimaxCalibration ? "readable" : "missing") << '\n'
                        << "pimax_compatible_driver=" << (compatiblePimax ? "verified" : "unverified") << '\n'
                        << "pimax_provider_running=" << (processCount(L"vrss_gaze_provider.exe") ? "yes" : "no") << '\n'
+                       << "pimax_xr5_runtime_running=" << (processCount(L"platform_runtime_XR5EYECHIP_WIN10_x64.exe") ? "yes" : "no") << '\n'
+                       << "pimax_service_running=" << (pimaxService.running ? "yes" : "no") << '\n'
+                       << "pimax_service_disabled=" << (pimaxService.disabled ? "yes" : "no") << '\n'
+                       << "sranibro_running=" << (processCount(L"SRanibro.exe") ? "yes" : "no") << '\n'
+                       << "pimax_bridge_present=" << (bridgeInstalled ? "yes" : "no") << '\n'
                        << "common_provider_binary=" << (commonBinary ? "present" : "missing") << '\n'
                        << "common_calibration=" << (commonCalibration ? "readable" : "missing") << '\n'
                        << "common_provider_running=" << (processCount(L"common_vrss_provider.exe") ? "yes" : "no") << '\n'
@@ -1349,6 +2056,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
                 result = report.good() ? 0 : 72;
             } else result = 72;
         }
+        else if (wcscmp(argv[1], L"--restore-pimax-service") == 0 && argc == 2) result=restorePimaxService();
         else if (wcscmp(argv[1], L"--apply") == 0) { result = applyCommand(argc, argv); if (!result && !saveStartupState()) result = 69; }
         else if (wcscmp(argv[1], L"--restore") == 0 && argc == 2) { result = restoreCommand(); if (!result && !saveStartupState()) result = 69; }
         else if (wcscmp(argv[1], L"--apply-gaze") == 0) result = gazeCommand(argc, argv, false);
@@ -1365,22 +2073,45 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
             result = parseNumber(L"5", value) && value == 5.0f &&
                      parseNumber(L"0.75", value) && value == 0.75f &&
                      !parseNumber(L"5junk", value) && !parseNumber(L"NaN", value) &&
-                     bitsFloat(floatBits(1.25f)) == 1.25f ? 0 : 35;
+                     bitsFloat(floatBits(1.25f)) == 1.25f &&
+                     sourceFromRunRoute("Baballonia") == 1 &&
+                     sourceFromRunRoute("PSVR2Toolkit") == 2 &&
+                     sourceFromRunRoute("SRanibro") == 3 &&
+                     sourceFromRunRoute("ViveProEye") == 4 &&
+                     sourceFromRunRoute("ViveStreaming") == 5 &&
+                     sourceFromRunRoute("SteamVREye") == 6 &&
+                     sourceFromRunRoute("Varjo") == 7 &&
+                     sourceFromRunRoute("unknown") == -1 ? 0 : 35;
         }
         else if (wcscmp(argv[1], L"--profile-self-test") == 0 && argc == 3) {
             SetEnvironmentVariableW(L"LOCALAPPDATA", argv[2]);
             NamedProfile original{};
-            original.mode = 1; original.target = 1; original.area = 35;
+            original.mode = 1; original.source = 2; original.area = 35;
             original.aspect = 1.25f; original.customAspect = true;
             original.x = .5f; original.y = -.55f; original.left = -2; original.right = 2;
             NamedProfile actual{};
             bool pass = writeProfile(L"CodexProfileTest", original) &&
                 readProfile(L"CodexProfileTest", actual) &&
-                actual.mode == original.mode && actual.target == original.target &&
+                actual.mode == original.mode && actual.source == original.source &&
                 actual.area == original.area && actual.aspect == original.aspect &&
                 actual.customAspect == original.customAspect && actual.x == original.x &&
                 actual.y == original.y && actual.left == original.left && actual.right == original.right &&
                 !validProfileName(L"../escape") && !validProfileName(L"bad:name");
+            for (int legacySource : {0,1,3,4,5}) {
+                original.source=legacySource;
+                pass=pass && writeProfile(L"LegacyProfileTest",original) &&
+                    readProfile(L"LegacyProfileTest",actual) && actual.source==legacySource;
+            }
+            original.source=8;
+            pass=pass && writeProfile(L"InvalidSourceTest",original) &&
+                !readProfile(L"InvalidSourceTest",actual);
+             std::wstring restored;
+             pass=pass && saveLastProfile(L"日本語 Profile") &&
+                 readLastProfile(restored) && restored==L"日本語 Profile" &&
+                 !saveLastProfile(L"../escape");
+             int restoredSource=-1;
+             pass=pass && saveLastSource(7) && readLastSource(restoredSource) &&
+                 restoredSource==7 && !saveLastSource(8);
             result = pass ? 0 : 37;
         }
         else if (wcscmp(argv[1], L"--startup-self-test") == 0 && argc == 3) {
@@ -1417,6 +2148,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     WNDCLASSW preview{}; preview.lpfnWndProc=regionPreviewProc;preview.hInstance=instance;
     preview.lpszClassName=L"VrssRegionPreview"; preview.hCursor=LoadCursorW(nullptr,IDC_ARROW);
     if(!RegisterClassW(&preview)) return 36;
+    WNDCLASSW liveMonitor{}; liveMonitor.lpfnWndProc=liveMonitorProc; liveMonitor.hInstance=instance;
+    liveMonitor.lpszClassName=L"VrssLiveMonitor"; liveMonitor.hCursor=LoadCursorW(nullptr,IDC_ARROW);
+    if(!RegisterClassW(&liveMonitor)) return 37;
     RECT work{};SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     int x=work.left+std::max(0,(int(work.right-work.left)-710)/2),y=work.top+std::max(0,(int(work.bottom-work.top)-730)/2);
     HWND window = CreateWindowExW(0, cls.lpszClassName, L"VRSS Tuner",

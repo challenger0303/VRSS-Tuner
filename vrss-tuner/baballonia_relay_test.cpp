@@ -30,6 +30,14 @@ int main() {
     }
     const auto bundled = babble::ParsePacket(bundle.data(), bundle.size());
     assert(bundled.count == 2 && bundled.items[0].eyeAxis == 0 && bundled.items[1].eyeAxis == 3);
+    auto custom=Osc("/custom/eyes/LeftEyeX",.25f);
+    assert(babble::ParsePacket(custom.data(),custom.size()).items[0].eyeAxis==0);
+    auto nested=bundle;
+    const auto nestedSize=uint32_t(bundle.size());
+    nested.resize(16);
+    nested.insert(nested.end(),{char(nestedSize>>24),char(nestedSize>>16),char(nestedSize>>8),char(nestedSize)});
+    nested.insert(nested.end(),bundle.begin(),bundle.end());
+    assert(babble::ParsePacket(nested.data(),nested.size()).count==2);
     WSADATA data{}; assert(WSAStartup(MAKEWORD(2,2), &data) == 0);
     SOCKET receiver = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     sockaddr_in endpoint{}; endpoint.sin_family = AF_INET;
@@ -44,6 +52,9 @@ int main() {
     std::atomic<bool> allow{false};
     babble::Relay relay;
     assert(relay.Start(39020, .5f, -.75f, 0, 0, [&] { return allow.load(); }, 39021, 39022));
+    babble::Relay conflict;
+    assert(!conflict.Start(39020,1,1,0,0,[]{return true;},39021));
+    assert(conflict.SocketError()!=0 && relay.Running());
     SOCKET sender = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     endpoint.sin_port = htons(39020);
     auto sendSet = [&] {
@@ -57,6 +68,11 @@ int main() {
     };
     sendSet(); Sleep(40);
     assert(relay.Received() >= 4 && relay.Sent() == 0);
+    babble::UdpGazeV1 captured{};double age=-1;
+    assert(relay.Read(captured,age) && captured.sequence && captured.qpc && relay.Datagrams()>=4);
+    assert(std::abs(captured.leftX-.4f)<.001f);
+    Sleep(180);
+    assert(!relay.Read(captured,age));
     char forwardedBytes[128]{};
     const int forwardSize = recv(forwarded, forwardedBytes, sizeof(forwardedBytes), 0);
     assert(forwardSize > 0 && babble::ParseOsc(forwardedBytes, forwardSize).eyeAxis >= 0);
@@ -68,5 +84,5 @@ int main() {
     assert(std::abs(packet.rightX + .3f) < .001f && std::abs(packet.rightY - .15f) < .001f);
     assert(packet.qpc > 0 && packet.sequence > 0);
     relay.Stop(); closesocket(sender); closesocket(receiver); closesocket(forwarded); WSACleanup();
-    std::cout << "BABALLONIA_RELAY_PASS parser bundle source_priority osc_forward stereo_udp gain inversion\n";
+    std::cout << "BABALLONIA_RELAY_PASS parser nested_bundle custom_prefix port_conflict input_snapshot stale_rejected osc_forward stereo_udp gain inversion\n";
 }
